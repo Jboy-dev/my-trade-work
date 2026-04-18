@@ -12,7 +12,9 @@ from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from streamlit_autorefresh import st_autorefresh
-import datetime, time, subprocess, io, base64, sys, platform
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import datetime, time, subprocess, io, base64, sys, platform, re
 
 st.set_page_config(page_title="FX Trading Assistant", layout="centered", page_icon="💰")
 
@@ -37,6 +39,8 @@ IS_MAC = platform.system() == "Darwin"
 for k, v in [
     ("watching", False), ("last_action", ""), ("last_spoken", ""),
     ("trade_log", []), ("screen_img", None), ("screen_verdict", ""),
+    ("ai_watch_result", None), ("ai_chart_bytes", None),
+    ("last_ai_spoken", ""),
 ]:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -377,6 +381,214 @@ if text_models:
                     st.markdown(resp.message.content.strip())
                 except Exception as e:
                     st.info(f"Local AI not available: {e}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🧠  AI AUTO-WATCH — no screen capture needed
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown("---")
+
+def build_chart_image(df, short_name):
+    d = df.tail(120).copy()
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        row_heights=[0.60, 0.20, 0.20],
+        vertical_spacing=0.04,
+        subplot_titles=(f"{short_name} — Price", "RSI", "MACD"),
+    )
+    fig.add_trace(go.Candlestick(
+        x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"],
+        name="Price",
+        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["BB_upper"], name="BB Upper",
+        line=dict(color="#5c6bc0", width=1, dash="dash")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["BB_lower"], name="BB Lower",
+        line=dict(color="#5c6bc0", width=1, dash="dash"),
+        fill="tonexty", fillcolor="rgba(92,107,192,0.07)"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["EMA20"], name="EMA 20",
+        line=dict(color="#ffb300", width=1.5)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["EMA50"], name="EMA 50",
+        line=dict(color="#ff7043", width=1.5)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["RSI"], name="RSI",
+        line=dict(color="#ab47bc", width=1.5)), row=2, col=1)
+    for lvl, lc in [(70,"#ef5350"),(50,"#546e7a"),(30,"#26a69a")]:
+        fig.add_hline(y=lvl, line_color=lc, line_dash="dot", line_width=1, row=2, col=1)
+    bar_colors = ["#26a69a" if v>=0 else "#ef5350" for v in d["MACD_hist"]]
+    fig.add_trace(go.Bar(x=d.index, y=d["MACD_hist"], name="Hist",
+        marker_color=bar_colors, opacity=0.7), row=3, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["MACD"], name="MACD",
+        line=dict(color="#42a5f5", width=1.5)), row=3, col=1)
+    fig.add_trace(go.Scatter(x=d.index, y=d["MACD_sig"], name="Signal",
+        line=dict(color="#ff7043", width=1.5)), row=3, col=1)
+    fig.update_layout(
+        template="plotly_dark", height=600, width=1100,
+        margin=dict(t=40, b=10, l=60, r=20),
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#1e272e")
+    fig.update_xaxes(showgrid=True, gridcolor="#1e272e")
+    try:
+        return fig.to_image(format="png", scale=1.5)
+    except Exception:
+        return None
+
+
+def ai_auto_watch(chart_bytes, df, short_name, action, reasons,
+                  take_profit, stop_loss, pips_profit, pips_risk, models):
+    import ollama
+    last = df.iloc[-1]
+    vision_models = [m for m in models if any(v in m.lower()
+                     for v in ["moondream","llava","vision","minicpm"])]
+    text_models   = [m for m in models if m not in vision_models]
+
+    visual_reading = ""
+    if vision_models and chart_bytes:
+        b64 = base64.standard_b64encode(chart_bytes).decode()
+        try:
+            r = ollama.chat(
+                model=vision_models[0],
+                messages=[{"role":"user",
+                    "content": "This is a live trading chart. Describe what you see in 2 sentences: Is the price trending up or down? Are the candles mostly green or red recently? Start with UP or DOWN.",
+                    "images":[b64]}],
+                options={"temperature":0.1,"num_predict":120},
+            )
+            visual_reading = r.message.content.strip()
+        except Exception:
+            pass
+
+    if not text_models:
+        return {"verdict":action,"plain":"","visual":visual_reading,
+                "entry":float(last["Close"]),"tp":take_profit,"sl":stop_loss}
+
+    rsi_val   = float(last["RSI"])
+    trend_dir = "UP" if float(last["EMA20"])>float(last["EMA50"]) else "DOWN"
+    why       = ", ".join(reasons[:4])
+
+    prompt = f"""You are a professional trading coach helping a complete beginner.
+
+MARKET DATA FOR {short_name}:
+- Current price: {float(last['Close']):.5f}
+- RSI: {rsi_val:.1f} ({'oversold — likely to go UP' if rsi_val<32 else 'overbought — likely to go DOWN' if rsi_val>68 else 'neutral'})
+- Overall trend direction: {trend_dir}
+- Key signals: {why}
+- My signal: {action}
+- Take-profit: {take_profit} (+{pips_profit} pips)
+- Stop-loss: {stop_loss} (-{pips_risk} pips)
+{f"- Chart visual reading: {visual_reading}" if visual_reading else ""}
+
+Write 4 plain sentences — no jargon, no indicator names:
+1. What the market is doing right now
+2. Why the signal says {action}
+3. Exactly what the person should do (with prices)
+4. When to get out if it goes wrong"""
+
+    try:
+        r = ollama.chat(
+            model=text_models[0],
+            messages=[{"role":"user","content":prompt}],
+            options={"temperature":0.25,"num_predict":350},
+        )
+        plain = re.sub(r"<think>.*?</think>","",r.message.content.strip(),flags=re.DOTALL).strip()
+    except Exception as e:
+        plain = f"AI reasoning unavailable: {e}"
+
+    return {"verdict":action,"plain":plain,"visual":visual_reading,
+            "entry":float(last["Close"]),"tp":take_profit,"sl":stop_loss,
+            "model":text_models[0],
+            "vis_model":vision_models[0] if vision_models else None,
+            "time":datetime.datetime.now().strftime("%H:%M:%S")}
+
+
+with st.expander("🧠  AI Auto-Watch — sees the market like you would", expanded=True):
+    st.markdown(
+        "The AI builds its own chart from live data, reads it visually, and tells you "
+        "**exactly what you'd see** if you opened your trading platform — then tells you what to do. "
+        "**No screen capture needed.**"
+    )
+    aw1, aw2 = st.columns([3, 1])
+    with aw2:
+        run_ai_watch = st.button("🔍 Analyse Now", use_container_width=True)
+    with aw1:
+        auto_ai = st.toggle("Auto-analyse on every refresh", value=True)
+
+    models = get_ollama_models()
+    should_run = run_ai_watch or (auto_ai and st.session_state["watching"])
+
+    if should_run and models:
+        with st.spinner("📊 Building your chart…"):
+            chart_bytes = build_chart_image(df, short_name)
+            if chart_bytes:
+                st.session_state["ai_chart_bytes"] = chart_bytes
+        with st.spinner("🧠 AI is reading the chart and making a prediction…"):
+            result = ai_auto_watch(
+                st.session_state.get("ai_chart_bytes"),
+                df, short_name, action, reasons,
+                take_profit, stop_loss, pips_profit, pips_risk, models,
+            )
+            result["time"] = datetime.datetime.now().strftime("%H:%M:%S")
+            st.session_state["ai_watch_result"] = result
+            if (IS_MAC and voice_on and result["verdict"] in ("BUY","SELL")
+                    and result["verdict"] != st.session_state.get("last_ai_spoken","")):
+                st.session_state["last_ai_spoken"] = result["verdict"]
+                speak(f"AI says {result['verdict']} {short_name} now at {result['entry']:.4f}. "
+                      f"Target {result['tp']:.4f}. Stop at {result['sl']:.4f}.")
+    elif should_run:
+        st.info("Ollama not running locally. The chart is still generated below — AI reasoning needs `ollama serve`.")
+        with st.spinner("📊 Building chart…"):
+            chart_bytes = build_chart_image(df, short_name)
+            if chart_bytes:
+                st.session_state["ai_chart_bytes"] = chart_bytes
+
+    res = st.session_state.get("ai_watch_result")
+    chart_col, info_col = st.columns([3, 2])
+
+    with chart_col:
+        st.markdown("**📈 What the market looks like right now**")
+        st.caption("Same chart you'd see on any trading platform — built live from real price data.")
+        cb = st.session_state.get("ai_chart_bytes")
+        if cb:
+            st.image(cb, use_container_width=True)
+        else:
+            st.markdown("<div style='background:#1e272e;border:2px dashed #546e7a;border-radius:10px;"
+                        "height:200px;display:flex;align-items:center;justify-content:center;"
+                        "color:#546e7a'>Press 🔍 Analyse Now to generate the chart</div>",
+                        unsafe_allow_html=True)
+
+    with info_col:
+        st.markdown("**🤖 AI's Prediction**")
+        if res:
+            v  = res["verdict"]
+            vc = {"BUY":"#00e676","SELL":"#ff1744","WAIT":"#90a4ae"}.get(v,"#90a4ae")
+            bg2= {"BUY":"#1b5e20","SELL":"#b71c1c","WAIT":"#1c2833"}.get(v,"#1c2833")
+            ico= {"BUY":"🟢","SELL":"🔴","WAIT":"⏳"}.get(v,"⏳")
+            st.markdown(
+                f"<div style='background:{bg2};border:2px solid {vc};border-radius:12px;"
+                f"padding:16px;text-align:center;margin-bottom:12px'>"
+                f"<div style='font-size:2rem;font-weight:900;color:{vc}'>{ico} {v}</div>"
+                f"<div style='color:#b0bec5;font-size:0.85rem'>at {res['entry']:.5f} · {res.get('time','')}</div>"
+                f"</div>", unsafe_allow_html=True)
+            lv1, lv2 = st.columns(2)
+            lv1.metric("💰 Take Profit", f"{res['tp']:.5f}" if res['tp'] else "—")
+            lv2.metric("🛑 Stop Loss",   f"{res['sl']:.5f}" if res['sl'] else "—")
+            if res.get("visual"):
+                st.markdown(f"**👁️ Chart shows:**\n\n*{res['visual']}*")
+            if res.get("plain"):
+                st.markdown("**🗣️ AI says:**")
+                st.markdown(f"<div style='background:#1e272e;border-radius:10px;padding:14px 16px;"
+                            f"color:#eceff1;font-size:1rem;line-height:1.7'>{res['plain']}</div>",
+                            unsafe_allow_html=True)
+            used = []
+            if res.get("vis_model"): used.append(f"👁️ {res['vis_model']}")
+            if res.get("model"):     used.append(f"🧠 {res['model']}")
+            if used: st.caption("  ·  ".join(used) + " · free & local")
+        else:
+            st.markdown("<div style='background:#1e272e;border:2px dashed #546e7a;border-radius:10px;"
+                        "padding:24px;text-align:center;color:#546e7a'>"
+                        "Press 🔍 Analyse Now<br>or turn on Auto-analyse</div>",
+                        unsafe_allow_html=True)
 
 # ── Screen monitor (only when running locally with mss) ──────────────────────
 if SCREEN_CAPTURE:
