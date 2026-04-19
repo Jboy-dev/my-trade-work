@@ -1,0 +1,36 @@
+name: Keep App Alive
+
+# Pings the Streamlit Cloud app every 6 hours so it never goes to sleep.
+# Also runs whenever you push to main so the app wakes up immediately.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours, around the clock
+  push:
+    branches: [main]
+  workflow_dispatch:         # lets you trigger it manually from GitHub
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit Cloud app
+        run: |
+          echo "Pinging app to keep it awake..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            https://jboy-dev-my-trade-work.streamlit.app/ 2>/dev/null || echo "000")
+          echo "Response: $STATUS"
+          if [ "$STATUS" = "200" ] || [ "$STATUS" = "302" ] || [ "$STATUS" = "301" ]; then
+            echo "✅ App is alive and responding"
+          else
+            echo "⚠ App returned $STATUS — it may be waking up (normal after sleep)"
+          fi
+
+      - name: Second ping after warmup
+        run: |
+          sleep 15
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            https://jboy-dev-my-trade-work.streamlit.app/ 2>/dev/null || echo "000")
+          echo "Warmup response: $STATUS"
