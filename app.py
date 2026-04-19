@@ -12,8 +12,17 @@ from plotly.subplots import make_subplots
 from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
-import datetime, time, subprocess, io, base64, re, mss
+import datetime, time, subprocess, io, base64, re, platform
 from PIL import Image
+
+IS_MAC = platform.system() == "Darwin"
+
+# mss is only available / useful when running locally with a display
+try:
+    import mss as _mss
+    HAS_MSS = True
+except ImportError:
+    HAS_MSS = False
 
 st.set_page_config(page_title="FX Live Trader", layout="centered", page_icon="💰")
 
@@ -103,10 +112,16 @@ def get_ollama_models():
         return []
 
 def speak(key, text):
-    if text != st.session_state.get(f"_spoken_{key}",""):
+    """Voice alert — only works on macOS (skipped silently on cloud/Linux)."""
+    if not IS_MAC:
+        return
+    if text != st.session_state.get(f"_spoken_{key}", ""):
         st.session_state[f"_spoken_{key}"] = text
-        subprocess.Popen(["say","-r","185",text],
-                         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            subprocess.Popen(["say", "-r", "185", text],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass  # silently ignore if say is unavailable
 
 # ── Session state defaults ────────────────────────────────────────────────────
 for k,v in [("trade_log",[]),("screen_img",None),("screen_verdict",""),
@@ -578,45 +593,50 @@ def signal_panel():
 # ── Run fragment ──────────────────────────────────────────────────────────────
 signal_panel()
 
-# ── Screen capture (static, outside fragment) ────────────────────────────────
+# ── Screen capture (local-only — hidden on cloud) ─────────────────────────────
 st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,.07);margin:20px 0'>",
             unsafe_allow_html=True)
-with st.expander("🖥️  Show my live trading screen (optional)", expanded=False):
-    models_all = get_ollama_models()
-    vis = [m for m in models_all if any(v in m.lower() for v in ["moondream","llava","vision"])]
-    sc1,sc2 = st.columns([3,1])
-    with sc2:
-        if st.button("📸 Capture", key="btn_cap"):
-            try:
-                with mss.mss() as sct:
-                    shot=sct.grab(sct.monitors[1])
-                img=Image.frombytes("RGB",shot.size,shot.bgra,"raw","BGRX")
-                st.session_state["screen_img"]=img
-                if vis:
-                    import ollama as _o
-                    buf=io.BytesIO()
-                    img.resize((1024,int(1024*img.height/img.width)),Image.LANCZOS).save(buf,format="JPEG",quality=70)
-                    r=_o.chat(model=vis[0],messages=[{"role":"user",
-                        "content":"One sentence starting UP or DOWN: direction of price on this chart?",
-                        "images":[base64.standard_b64encode(buf.getvalue()).decode()]}],
-                        options={"temperature":.1,"num_predict":60})
-                    st.session_state["screen_verdict"]=r.message.content.strip()
-            except Exception as e:
-                st.error(f"Screen capture error: {e}")
-    with sc1:
-        if st.session_state["screen_img"]:
-            st.image(st.session_state["screen_img"],use_container_width=True)
-            v=st.session_state.get("screen_verdict","")
-            if v:
-                vc2="#00e676" if v.upper().startswith("UP") else "#ff5252"
-                st.markdown(f"<div style='background:rgba(0,0,0,.3);border:1.5px solid {vc2};"
-                            f"border-radius:8px;padding:8px;text-align:center;"
-                            f"color:{vc2};font-weight:700'>{v}</div>",unsafe_allow_html=True)
-        else:
-            st.markdown("<div style='background:rgba(255,255,255,.02);border:1px dashed "
-                        "rgba(255,255,255,.1);border-radius:12px;height:130px;display:flex;"
-                        "align-items:center;justify-content:center;color:#4b5563'>"
-                        "Click 📸 Capture</div>",unsafe_allow_html=True)
+with st.expander("🖥️  Show my live trading screen (local only)", expanded=False):
+    if not HAS_MSS or not IS_MAC:
+        st.info("Screen capture is only available when running the app locally on your Mac. "
+                "On Streamlit Cloud this section is disabled.")
+    else:
+        models_all = get_ollama_models()
+        vis = [m for m in models_all if any(v in m.lower() for v in ["moondream","llava","vision"])]
+        sc1, sc2 = st.columns([3, 1])
+        with sc2:
+            if st.button("📸 Capture", key="btn_cap"):
+                try:
+                    with _mss.mss() as sct:
+                        shot = sct.grab(sct.monitors[1])
+                    img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                    st.session_state["screen_img"] = img
+                    if vis:
+                        import ollama as _o
+                        buf = io.BytesIO()
+                        img.resize((1024, int(1024 * img.height / img.width)),
+                                   Image.LANCZOS).save(buf, format="JPEG", quality=70)
+                        r = _o.chat(model=vis[0], messages=[{"role": "user",
+                            "content": "One sentence starting UP or DOWN: direction of price on this chart?",
+                            "images": [base64.standard_b64encode(buf.getvalue()).decode()]}],
+                            options={"temperature": .1, "num_predict": 60})
+                        st.session_state["screen_verdict"] = r.message.content.strip()
+                except Exception as e:
+                    st.error(f"Screen capture error: {e}")
+        with sc1:
+            if st.session_state["screen_img"]:
+                st.image(st.session_state["screen_img"], use_container_width=True)
+                v = st.session_state.get("screen_verdict", "")
+                if v:
+                    vc2 = "#00e676" if v.upper().startswith("UP") else "#ff5252"
+                    st.markdown(f"<div style='background:rgba(0,0,0,.3);border:1.5px solid {vc2};"
+                                f"border-radius:8px;padding:8px;text-align:center;"
+                                f"color:{vc2};font-weight:700'>{v}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div style='background:rgba(255,255,255,.02);border:1px dashed "
+                            "rgba(255,255,255,.1);border-radius:12px;height:130px;display:flex;"
+                            "align-items:center;justify-content:center;color:#4b5563'>"
+                            "Click 📸 Capture</div>", unsafe_allow_html=True)
 
 # ── Trade log ─────────────────────────────────────────────────────────────────
 st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,.07);margin:20px 0'>",
