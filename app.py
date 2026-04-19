@@ -652,8 +652,8 @@ def scan_one(pair, yf_sym, interval, period, valid_secs, tf_label, news_sentimen
 # ── chart builder ─────────────────────────────────────────────────────────────
 def build_chart(df, pair, action, entry, tp, sl, theme="dark"):
     palettes = {
-        "dark":        dict(bg="#000",       grid="#1a1a1a", up="#30d158", dn="#ff453a",
-                            tp_c="#30d158",  sl_c="#ff453a", en_c="#ffd60a", txt="#fff"),
+        "dark":        dict(bg="#000000",    grid="#1a1a1a", up="#30d158", dn="#ff453a",
+                            tp_c="#30d158",  sl_c="#ff453a", en_c="#ffd60a", txt="#ffffff"),
         "metatrader":  dict(bg="#131722",    grid="#1e2230", up="#26a69a", dn="#ef5350",
                             tp_c="#26a69a",  sl_c="#ef5350", en_c="#2962ff", txt="#b2b5be"),
         "tradingview": dict(bg="#131722",    grid="#1e222d", up="#26a69a", dn="#ef5350",
@@ -674,16 +674,22 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark"):
         name="Price", line_width=1), row=1, col=1)
 
     x0, x1 = last.index[0], last.index[-1]
+    # annotation bg: always use rgba() so it works in every Plotly version
+    ann_bg = "rgba(0,0,0,0.75)" if t["bg"] in ("#000000","#000") else "rgba(19,23,34,0.85)"
     for pv, clr, lbl, dash, w in [
-        (tp,    t["tp_c"], f"TP  {tp:.5f}",     "dash", 1.5),
-        (sl,    t["sl_c"], f"SL  {sl:.5f}",     "dash", 1.5),
+        (tp,    t["tp_c"], f"TP  {tp:.5f}",      "dash", 1.5),
+        (sl,    t["sl_c"], f"SL  {sl:.5f}",      "dash", 1.5),
         (entry, t["en_c"], f"Entry  {entry:.5f}", "dot",  1.5),
     ]:
         fig.add_shape(type="line", x0=x0, x1=x1, y0=pv, y1=pv,
                       line=dict(color=clr, width=w, dash=dash), row=1, col=1)
-        fig.add_annotation(x=x1, y=pv, text=lbl, showarrow=False,
-                           xanchor="right", font=dict(color=clr, size=10, family="monospace"),
-                           bgcolor=t["bg"]+"cc", borderpad=3, row=1, col=1)
+        # add_annotation does NOT accept row/col — annotations are layout-level
+        fig.add_annotation(x=x1, y=pv, text=f"<b>{lbl}</b>", showarrow=False,
+                           xref="x", yref="y",
+                           xanchor="right", yanchor="middle",
+                           font=dict(color=clr, size=10),
+                           bgcolor=ann_bg, borderpad=3, bordercolor=clr,
+                           borderwidth=0, opacity=0.9)
 
     zone_c = "rgba(48,209,88,0.06)" if action == "BUY" else "rgba(255,69,58,0.06)"
     fig.add_shape(type="rect", x0=x0, x1=x1,
@@ -1316,7 +1322,7 @@ with T_confirm:
 
     if uploaded:
         img_bytes = uploaded.read()
-        st.image(img_bytes, use_column_width=True)
+        st.image(img_bytes, use_container_width=True)
 
         sig_c = st.session_state.get("signals",{}).get(confirm_pair)
         if sig_c is None:
