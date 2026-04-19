@@ -700,13 +700,15 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark"):
         # smooth update — no white flash
         transition=dict(duration=0),
     )
-    ax_style = dict(gridcolor=t["grid"], gridwidth=1,
-                    zerolinecolor=t["grid"],
-                    tickfont=dict(color=t["txt"]), showgrid=True,
-                    spikesnap="cursor", spikemode="across",
-                    spikethickness=1, spikecolor=t["txt"]+"55")
-    fig.update_layout(xaxis=ax_style, xaxis2=ax_style,
-                      yaxis=ax_style, yaxis2=ax_style)
+    # spike props are only valid on xaxis, NOT yaxis — keep them separate
+    base_style = dict(gridcolor=t["grid"], gridwidth=1,
+                      zerolinecolor=t["grid"],
+                      tickfont=dict(color=t["txt"]), showgrid=True)
+    x_style = dict(**base_style,
+                   spikesnap="cursor", spikemode="across",
+                   spikethickness=1, spikecolor="rgba(255,255,255,0.25)")
+    fig.update_layout(xaxis=x_style, xaxis2=x_style,
+                      yaxis=base_style, yaxis2=base_style)
     return fig
 
 # ══════════════════════════════════════════════════════════════════════════════
