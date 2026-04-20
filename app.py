@@ -1486,44 +1486,43 @@ with T3:
         calc_lose = calc_profit(calc_amt, calc_lev, sl_p, calc_ps, entry)
         calc_rr   = calc_win / max(calc_lose, 0.01)
         rr_col    = "#30d158" if calc_rr >= 1.5 else ("#ffd60a" if calc_rr >= 1.0 else "#ff453a")
-        rr_lbl    = "✅ Good ratio" if calc_rr >= 1.5 else ("⚠️ Acceptable" if calc_rr >= 1.0 else "❌ Poor ratio")
+        rr_lbl    = "Good ratio" if calc_rr >= 1.5 else ("Acceptable" if calc_rr >= 1.0 else "Poor ratio")
+        rr_icon   = "✅" if calc_rr >= 1.5 else ("⚠️" if calc_rr >= 1.0 else "❌")
         pos_size  = calc_amt * calc_lev
 
-        st.markdown(f"""
-<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
-border-radius:16px;padding:22px 26px;margin-top:8px;">
-  <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:center;">
-
-    <div style="display:flex;flex-direction:column;gap:3px;">
-      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">Position size</div>
-      <div style="font-size:1.55rem;font-weight:900;color:#fff;letter-spacing:-.03em;">£{pos_size:,.0f}</div>
-      <div style="font-size:.72rem;color:rgba(255,255,255,.3);">£{calc_amt:.0f} &times; {calc_lev}x leverage</div>
-    </div>
-
-    <div style="width:1px;background:rgba(255,255,255,.07);height:52px;align-self:center;"></div>
-
-    <div style="display:flex;flex-direction:column;gap:3px;">
-      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">If Take Profit hit</div>
-      <div style="font-size:1.9rem;font-weight:900;color:#30d158;letter-spacing:-.03em;">+£{calc_win:.2f}</div>
-      <div style="font-size:.72rem;color:rgba(48,209,88,.5);">{tp:.5f} &nbsp;·&nbsp; +{tp_p} pips</div>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:3px;">
-      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">If Stop Loss hit</div>
-      <div style="font-size:1.9rem;font-weight:900;color:#ff453a;letter-spacing:-.03em;">&#8722;£{calc_lose:.2f}</div>
-      <div style="font-size:.72rem;color:rgba(255,69,58,.5);">{sl:.5f} &nbsp;·&nbsp; &minus;{sl_p} pips</div>
-    </div>
-
-    <div style="width:1px;background:rgba(255,255,255,.07);height:52px;align-self:center;"></div>
-
-    <div style="display:flex;flex-direction:column;gap:3px;">
-      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">Risk / Reward</div>
-      <div style="font-size:1.9rem;font-weight:900;color:{rr_col};letter-spacing:-.03em;">{calc_rr:.1f}:1</div>
-      <div style="font-size:.72rem;color:{rr_col};opacity:.65;">{rr_lbl}</div>
-    </div>
-
-  </div>
-</div>""", unsafe_allow_html=True)
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        with mc1:
+            st.markdown(
+                f'<div class="mc" style="border-color:rgba(255,255,255,.1);">'
+                f'<div class="mc-v" style="color:#fff;font-size:1.6rem;">£{pos_size:,.0f}</div>'
+                f'<div class="mc-l">Position size</div>'
+                f'<div style="font-size:.69rem;color:rgba(255,255,255,.25);margin-top:5px;">'
+                f'£{calc_amt:.0f} &times; {calc_lev}x leverage</div></div>',
+                unsafe_allow_html=True)
+        with mc2:
+            st.markdown(
+                f'<div class="mc" style="border-color:rgba(48,209,88,.2);background:rgba(48,209,88,.05);">'
+                f'<div class="mc-v" style="color:#30d158;font-size:1.6rem;">+£{calc_win:.2f}</div>'
+                f'<div class="mc-l">If Take Profit hit</div>'
+                f'<div style="font-size:.69rem;color:rgba(48,209,88,.45);margin-top:5px;">'
+                f'+{tp_p} pips &nbsp;·&nbsp; {tp:.5f}</div></div>',
+                unsafe_allow_html=True)
+        with mc3:
+            st.markdown(
+                f'<div class="mc" style="border-color:rgba(255,69,58,.2);background:rgba(255,69,58,.05);">'
+                f'<div class="mc-v" style="color:#ff453a;font-size:1.6rem;">&minus;£{calc_lose:.2f}</div>'
+                f'<div class="mc-l">If Stop Loss hit</div>'
+                f'<div style="font-size:.69rem;color:rgba(255,69,58,.45);margin-top:5px;">'
+                f'&minus;{sl_p} pips &nbsp;·&nbsp; {sl:.5f}</div></div>',
+                unsafe_allow_html=True)
+        with mc4:
+            st.markdown(
+                f'<div class="mc" style="border-color:rgba(255,255,255,.1);">'
+                f'<div class="mc-v" style="color:{rr_col};font-size:1.6rem;">{calc_rr:.1f}:1</div>'
+                f'<div class="mc-l">Risk / Reward</div>'
+                f'<div style="font-size:.69rem;color:{rr_col};opacity:.7;margin-top:5px;">'
+                f'{rr_icon} {rr_lbl}</div></div>',
+                unsafe_allow_html=True)
 
     guide()
 
