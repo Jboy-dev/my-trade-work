@@ -255,7 +255,8 @@ BEAR_WORDS = {
 # ══════════════════════════════════════════════════════════════════════════════
 #  SESSION STATE
 # ══════════════════════════════════════════════════════════════════════════════
-for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False)]:
+for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False),
+               ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0)]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -614,7 +615,7 @@ def scan_one(pair, yf_sym, interval, period, valid_secs, tf_label, news_sent):
 # ══════════════════════════════════════════════════════════════════════════════
 #  CHART BUILDER — interactive Plotly, platform themes
 # ══════════════════════════════════════════════════════════════════════════════
-def build_chart(df, pair, action, entry, tp, sl, theme="dark"):
+def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1"):
     palettes = {
         "dark":        dict(bg="#000000",bg2="rgba(0,0,0,0.82)",
                             grid="#1a1a1a",up="#30d158",dn="#ff453a",
@@ -697,8 +698,9 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark"):
         margin=dict(l=8, r=8, t=46, b=8),
         hovermode="x unified",
         legend=dict(bgcolor="rgba(0,0,0,0)"),
-        # smooth update — no white flash
         transition=dict(duration=0),
+        # changing uirevision resets zoom/pan back to default view
+        uirevision=str(uirev),
     )
     # spike props are only valid on xaxis, NOT yaxis — keep them separate
     base_style = dict(gridcolor=t["grid"], gridwidth=1,
@@ -891,8 +893,13 @@ with T1:
             speak(f"hero_{best_pair}_{best['issued_at']:.0f}",
                   f"Top trade: {act} {best_pair.replace('/','')} — {conf} percent confidence.")
 
-            # ── hero chart — interactive, refreshes in-place with stable key ─
-            fig = build_chart(best["df"], best_pair, act, entry, tp, sl)
+            # ── hero chart ────────────────────────────────────────────────────
+            _ch_l, _ch_r = st.columns([8, 1])
+            with _ch_r:
+                if st.button("↺", key="reset_hero", help="Reset chart zoom & pan"):
+                    st.session_state["rev_hero"] += 1
+            fig = build_chart(best["df"], best_pair, act, entry, tp, sl,
+                              uirev=st.session_state["rev_hero"])
             st.plotly_chart(fig, use_container_width=True, key="hero_chart",
                             config={"displayModeBar":True,"scrollZoom":True,
                                     "modeBarButtonsToRemove":["select2d","lasso2d"]})
@@ -1139,7 +1146,12 @@ with T3:
         # ── MetaTrader ──────────────────────────────────────────────────────
         with pt_mt:
             if df is not None:
-                fig = build_chart(df, guide_pair, act, entry, tp, sl, "metatrader")
+                _ml, _mr = st.columns([8, 1])
+                with _mr:
+                    if st.button("↺", key="reset_mt", help="Reset chart zoom & pan"):
+                        st.session_state["rev_mt"] += 1
+                fig = build_chart(df, guide_pair, act, entry, tp, sl, "metatrader",
+                                  uirev=st.session_state["rev_mt"])
                 fig.update_layout(title=dict(text=f"MetaTrader · {guide_pair} · {act}",
                                              font=dict(color="#82b1ff",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="mt_chart",
@@ -1158,7 +1170,12 @@ with T3:
         # ── TradingView ─────────────────────────────────────────────────────
         with pt_tv:
             if df is not None:
-                fig = build_chart(df, guide_pair, act, entry, tp, sl, "tradingview")
+                _tl, _tr = st.columns([8, 1])
+                with _tr:
+                    if st.button("↺", key="reset_tv", help="Reset chart zoom & pan"):
+                        st.session_state["rev_tv"] += 1
+                fig = build_chart(df, guide_pair, act, entry, tp, sl, "tradingview",
+                                  uirev=st.session_state["rev_tv"])
                 fig.update_layout(title=dict(text=f"TradingView · {guide_pair} · {act}",
                                              font=dict(color="#26a69a",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="tv_chart",
@@ -1177,7 +1194,12 @@ with T3:
         # ── IG Broker ───────────────────────────────────────────────────────
         with pt_ig:
             if df is not None:
-                fig = build_chart(df, guide_pair, act, entry, tp, sl, "ig")
+                _il, _ir = st.columns([8, 1])
+                with _ir:
+                    if st.button("↺", key="reset_ig", help="Reset chart zoom & pan"):
+                        st.session_state["rev_ig"] += 1
+                fig = build_chart(df, guide_pair, act, entry, tp, sl, "ig",
+                                  uirev=st.session_state["rev_ig"])
                 fig.update_layout(title=dict(text=f"IG Broker · {guide_pair} · {act}",
                                              font=dict(color="#5b9bd5",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="ig_chart",
