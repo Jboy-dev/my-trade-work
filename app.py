@@ -261,8 +261,8 @@ BEAR_WORDS = {
 #  SESSION STATE
 # ══════════════════════════════════════════════════════════════════════════════
 for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False),
-               ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0),
-               ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan"),
+               ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0),("rev_pred",0),
+               ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan"),("drag_pred","pan"),
                ("voice_muted", False)]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -729,148 +729,236 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1", dragmo
 # ══════════════════════════════════════════════════════════════════════════════
 #  PREDICTION CHART — historical + projected future candles
 # ══════════════════════════════════════════════════════════════════════════════
-def build_prediction_chart(df, pair, action, entry, tp, sl, tp_pips, sl_pips, issued_at=0):
+def build_prediction_chart(df, pair, action, entry, tp, sl,
+                           tp_pips, sl_pips, issued_at=0, dragmode="pan", uirev="1"):
     """
-    Builds a Plotly chart showing historical candles + AI-projected future path.
+    TradingView-accurate prediction chart.
 
-    Historical: last 50 real candles.
-    Projected : 20 forward candles drifting in signal direction using ATR
-                volatility + momentum decay (uncertainty grows over time).
-    Overlays  : TP / SL / Entry lines, shaded expected-path corridor.
+    Historical section (left of NOW):
+      • Candlesticks in TradingView teal/red palette
+      • EMA 20 (gold) + EMA 50 (purple) overlays
+      • Volume sub-chart below (matching TV layout)
+
+    Forecast section (right of NOW):
+      • 100-scenario Monte Carlo → 10th/25th/50th/75th/90th percentile bands
+      • Outer shaded cone  = 80 % of scenarios  (wide, light fill)
+      • Inner shaded cone  = 50 % of scenarios  (narrow, stronger fill)
+      • Median path line   = dotted, in signal colour
+      • Projected candles  = semi-transparent, median-aligned
+      • TP / SL / Entry    = dashed horizontal lines with right-side price badges
+      • "AI FORECAST →"    label at the NOW divider
     """
-    t = dict(bg="#000000", bg2="rgba(0,0,0,0.85)", grid="#1a1a1a",
-             up="#30d158", dn="#ff453a", tp_c="#30d158", sl_c="#ff453a",
-             en_c="#ffd60a", txt="#ffffff")
+    # ── TradingView dark palette ───────────────────────────────────────────────
+    BG   = "#131722"
+    BG2  = "rgba(19,23,34,0.94)"
+    GRID = "#1e222d"
+    UP   = "#26a69a"     # TradingView bullish teal
+    DN   = "#ef5350"     # TradingView bearish red
+    TP_C = "#26a69a"
+    SL_C = "#ef5350"
+    EN_C = "#2962ff"     # TradingView entry blue
+    TXT  = "#b2b5be"     # TradingView body text
+    FONT = "'Trebuchet MS','Verdana',sans-serif"
 
-    last = df.tail(50).copy()
+    DIR_C     = UP if action == "BUY" else DN
+    CONE_FILL = "rgba(38,166,154,0.07)"  if action == "BUY" else "rgba(239,83,80,0.07)"
+    CONE_INNER= "rgba(38,166,154,0.13)"  if action == "BUY" else "rgba(239,83,80,0.13)"
+    CONE_LINE = "rgba(38,166,154,0.22)"  if action == "BUY" else "rgba(239,83,80,0.22)"
+
+    # ── Data prep ─────────────────────────────────────────────────────────────
+    last = df.tail(60).copy()
     ps   = pip_size(pair)
 
-    # ATR for realistic volatility
     h, lo, c = last["High"], last["Low"], last["Close"]
-    tr_s  = pd.concat([(h - lo),
-                        (h - c.shift()).abs(),
-                        (lo - c.shift()).abs()], axis=1).max(axis=1)
-    atr = float(tr_s.rolling(14).mean().iloc[-1])
+    tr_s = pd.concat([(h - lo),
+                       (h - c.shift()).abs(),
+                       (lo - c.shift()).abs()], axis=1).max(axis=1)
+    atr  = float(tr_s.rolling(14).mean().iloc[-1])
     if np.isnan(atr) or atr <= 0:
         atr = tp_pips * ps * 0.5
 
-    # candle time-delta
-    td = (last.index[-1] - last.index[-2]) if len(last.index) >= 2 else pd.Timedelta(minutes=5)
-
+    td         = (last.index[-1] - last.index[-2]) if len(last.index) >= 2 else pd.Timedelta(minutes=5)
     last_close = float(last["Close"].iloc[-1])
     last_time  = last.index[-1]
-    n_proj     = 20
+    n_proj     = 24   # ~same number of candles TradingView's forecast tool shows
 
-    # deterministic RNG per signal so projection doesn't flicker on every refresh
-    rng = np.random.default_rng(int(issued_at) % (2**31))
+    # ── Monte Carlo forecast (100 scenarios) ──────────────────────────────────
+    rng          = np.random.default_rng(int(issued_at) % (2**31))
+    total_drift  = tp - last_close
+    n_scenarios  = 100
+    all_paths    = np.zeros((n_scenarios, n_proj))
 
-    # drift: aim to reach TP by ~75 % of projected bars, decaying as uncertainty grows
-    total_drift   = tp - last_close
-    drift_per_bar = total_drift / (n_proj * 0.75)
+    for s in range(n_scenarios):
+        cur = last_close
+        for i in range(n_proj):
+            fade  = max(0.15, 1.0 - i / n_proj)        # drift weakens over time
+            drift = (total_drift / (n_proj * 0.72)) * fade
+            noise = float(rng.normal(0, atr * 0.45))
+            cur   = cur + drift + noise
+            if action == "BUY":
+                cur = max(sl * 0.997, min(tp * 1.02, cur))
+            else:
+                cur = min(sl * 1.003, max(tp * 0.98, cur))
+            all_paths[s, i] = cur
 
-    proj_times  = [last_time + td * (i + 1) for i in range(n_proj)]
-    proj_opens, proj_closes, proj_highs, proj_lows = [], [], [], []
+    p10 = np.percentile(all_paths, 10, axis=0)
+    p25 = np.percentile(all_paths, 25, axis=0)
+    p50 = np.percentile(all_paths, 50, axis=0)   # median
+    p75 = np.percentile(all_paths, 75, axis=0)
+    p90 = np.percentile(all_paths, 90, axis=0)
 
+    proj_times = [last_time + td * (i + 1) for i in range(n_proj)]
+
+    # Projected candles aligned to median path
+    rng2 = np.random.default_rng(int(issued_at * 3 + 7) % (2**31))
+    p_opens, p_closes, p_highs, p_lows = [], [], [], []
     cur = last_close
     for i in range(n_proj):
-        fade  = max(0.25, 1.0 - i / n_proj)          # confidence decays further out
-        noise = float(rng.normal(0, atr * 0.55))
-        o     = cur + float(rng.normal(0, atr * 0.07))
-        cl    = o + drift_per_bar * fade + noise
-        # soft-clamp: don't project more than 10 % beyond TP or SL
-        if action == "BUY":
-            cl = max(sl * 0.999, min(tp * 1.01, cl))
-        else:
-            cl = min(sl * 1.001, max(tp * 0.99, cl))
-        hi  = max(o, cl) + abs(float(rng.normal(0, atr * 0.22)))
-        lo_ = min(o, cl) - abs(float(rng.normal(0, atr * 0.22)))
-        proj_opens.append(o);  proj_closes.append(cl)
-        proj_highs.append(hi); proj_lows.append(lo_)
+        cl  = float(p50[i])
+        o   = cur + float(rng2.normal(0, atr * 0.04))
+        hi  = max(o, cl) + abs(float(rng2.normal(0, atr * 0.12)))
+        lo_ = min(o, cl) - abs(float(rng2.normal(0, atr * 0.12)))
+        p_opens.append(o);  p_closes.append(cl)
+        p_highs.append(hi); p_lows.append(lo_)
         cur = cl
 
-    # ── build figure ──────────────────────────────────────────────────────────
-    fig = make_subplots(rows=1, cols=1)
+    # EMAs
+    ema20 = last["Close"].ewm(span=20, adjust=False).mean()
+    ema50 = last["Close"].ewm(span=50, adjust=False).mean()
 
-    # historical candles
+    # ── Build figure (candlestick + volume, 2 rows — TradingView layout) ──────
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.77, 0.23], vertical_spacing=0.01)
+
+    # ── 1. Historical candles ─────────────────────────────────────────────────
     fig.add_trace(go.Candlestick(
-        x=last.index, open=last["Open"], high=last["High"],
-        low=last["Low"],  close=last["Close"],
-        increasing_fillcolor=t["up"], increasing_line_color=t["up"],
-        decreasing_fillcolor=t["dn"], decreasing_line_color=t["dn"],
-        name="Historical", line_width=1))
+        x=last.index,
+        open=last["Open"], high=last["High"],
+        low=last["Low"],   close=last["Close"],
+        increasing_fillcolor=UP, increasing_line_color=UP,
+        decreasing_fillcolor=DN, decreasing_line_color=DN,
+        name="Price", line_width=1), row=1, col=1)
 
-    # projected candles (translucent)
-    p_up = "rgba(48,209,88,0.50)"  if action == "BUY" else "rgba(255,69,58,0.50)"
-    p_dn = "rgba(255,69,58,0.50)"  if action == "BUY" else "rgba(48,209,88,0.50)"
-    fig.add_trace(go.Candlestick(
-        x=proj_times,
-        open=proj_opens, high=proj_highs,
-        low=proj_lows,   close=proj_closes,
-        increasing_fillcolor=p_up, increasing_line_color=p_up,
-        decreasing_fillcolor=p_dn, decreasing_line_color=p_dn,
-        name="Projected path", line_width=1, opacity=0.55))
+    # ── 2. EMA 20 + EMA 50 (standard TradingView indicator colours) ──────────
+    fig.add_trace(go.Scatter(
+        x=last.index, y=ema20,
+        line=dict(color="rgba(255,214,10,0.65)", width=1.3),
+        name="EMA 20", showlegend=True), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=last.index, y=ema50,
+        line=dict(color="rgba(149,128,255,0.65)", width=1.3),
+        name="EMA 50", showlegend=True), row=1, col=1)
 
-    # shaded expected-path corridor
-    env_top = [max(h_, c_) + atr * 0.18 for h_, c_ in zip(proj_highs, proj_closes)]
-    env_bot = [min(l_, c_) - atr * 0.18 for l_, c_ in zip(proj_lows,  proj_closes)]
-    zone_f  = "rgba(48,209,88,0.07)"  if action == "BUY" else "rgba(255,69,58,0.07)"
-    zone_l  = "rgba(48,209,88,0.18)"  if action == "BUY" else "rgba(255,69,58,0.18)"
+    # ── 3. Forecast outer cone — 80 % of scenarios ───────────────────────────
     fig.add_trace(go.Scatter(
         x=proj_times + proj_times[::-1],
-        y=env_top    + env_bot[::-1],
-        fill="toself", fillcolor=zone_f,
-        line=dict(color=zone_l, width=0.8),
-        showlegend=False, hoverinfo="skip"))
+        y=list(p90) + list(p10[::-1]),
+        fill="toself", fillcolor=CONE_FILL,
+        line=dict(color=CONE_LINE, width=0.6),
+        showlegend=False, hoverinfo="skip",
+        name="80% range"), row=1, col=1)
 
-    # vertical "NOW" divider
+    # ── 4. Forecast inner cone — 50 % of scenarios ───────────────────────────
+    fig.add_trace(go.Scatter(
+        x=proj_times + proj_times[::-1],
+        y=list(p75) + list(p25[::-1]),
+        fill="toself", fillcolor=CONE_INNER,
+        line=dict(color="rgba(0,0,0,0)", width=0),
+        showlegend=False, hoverinfo="skip",
+        name="50% range"), row=1, col=1)
+
+    # ── 5. Median path (dotted line) ─────────────────────────────────────────
+    fig.add_trace(go.Scatter(
+        x=proj_times, y=p50,
+        line=dict(color=DIR_C, width=2, dash="dot"),
+        showlegend=True, name="AI median path"), row=1, col=1)
+
+    # ── 6. Projected candles on median ───────────────────────────────────────
+    pu = f"rgba(38,166,154,0.52)"  if action == "BUY" else "rgba(239,83,80,0.52)"
+    pd_= f"rgba(239,83,80,0.52)"  if action == "BUY" else "rgba(38,166,154,0.52)"
+    fig.add_trace(go.Candlestick(
+        x=proj_times,
+        open=p_opens, high=p_highs,
+        low=p_lows,   close=p_closes,
+        increasing_fillcolor=pu, increasing_line_color=pu,
+        decreasing_fillcolor=pd_, decreasing_line_color=pd_,
+        name="Projected candles", line_width=1,
+        showlegend=False, opacity=0.6), row=1, col=1)
+
+    # ── 7. Volume bars (TradingView style — coloured by candle direction) ─────
+    vol_c = [UP if float(cl) >= float(op) else DN
+             for cl, op in zip(last["Close"], last["Open"])]
+    fig.add_trace(go.Bar(
+        x=last.index, y=last["Volume"],
+        marker_color=vol_c, marker_opacity=0.45,
+        showlegend=False, name="Volume"), row=2, col=1)
+
+    # ── 8. "NOW" vertical divider ─────────────────────────────────────────────
     fig.add_shape(type="line", x0=last_time, x1=last_time,
                   y0=0, y1=1, yref="paper",
-                  line=dict(color="rgba(255,255,255,0.22)", width=1, dash="dot"))
-    fig.add_annotation(x=last_time, y=0.98, xref="x", yref="paper",
-                       text="<b>NOW</b>", showarrow=False,
-                       yanchor="top",
-                       font=dict(color="rgba(255,255,255,0.32)", size=9),
-                       bgcolor="rgba(0,0,0,0)", borderpad=2)
+                  line=dict(color="rgba(255,255,255,0.20)", width=1.2, dash="dot"))
+    fig.add_annotation(
+        x=proj_times[0], y=0.985, xref="x", yref="paper",
+        text=f"<b>AI FORECAST \u2192</b>",
+        showarrow=False, xanchor="left", yanchor="top",
+        font=dict(color=DIR_C, size=9, family=FONT),
+        bgcolor="rgba(0,0,0,0)", borderpad=2)
 
-    # TP / SL / Entry horizontal lines (only over projected area)
+    # ── 9. Current price horizontal dashed line ───────────────────────────────
     x_end = proj_times[-1]
-    for pv, clr, lbl in [
-        (tp,    t["tp_c"], f"TP  {tp:.5f}  (+{tp_pips}p)"),
-        (sl,    t["sl_c"], f"SL  {sl:.5f}  (\u2212{sl_pips}p)"),
-        (entry, t["en_c"], f"Entry  {entry:.5f}"),
+    fig.add_shape(type="line", x0=last.index[0], x1=last_time,
+                  y0=last_close, y1=last_close,
+                  line=dict(color="rgba(255,255,255,0.15)", width=1, dash="dot"),
+                  row=1, col=1)
+
+    # ── 10. TP / SL / Entry — TradingView-style dashed lines + right badge ────
+    for pv, clr, lbl, dash in [
+        (tp,    TP_C, f"TP  {tp:.5f}  +{tp_pips}p",     "dash"),
+        (sl,    SL_C, f"SL  {sl:.5f}  \u2212{sl_pips}p", "dash"),
+        (entry, EN_C, f"Entry  {entry:.5f}",              "dot"),
     ]:
         fig.add_shape(type="line", x0=last_time, x1=x_end, y0=pv, y1=pv,
-                      line=dict(color=clr, width=1.4, dash="dash"))
+                      line=dict(color=clr, width=1.6, dash=dash),
+                      row=1, col=1)
+        # Right-side price label (mimics TradingView's price tag on Y-axis)
         fig.add_annotation(
             x=x_end, y=pv, xref="x", yref="y",
-            text=f"<b>{lbl}</b>", showarrow=False,
-            xanchor="right", yanchor="middle",
-            font=dict(color=clr, size=10),
-            bgcolor=t["bg2"], borderpad=3, opacity=0.92)
+            text=f"<b>{lbl}</b>",
+            showarrow=False, xanchor="right", yanchor="middle",
+            font=dict(color=clr, size=10, family="'Courier New',monospace"),
+            bgcolor=BG2, borderpad=4, opacity=0.97)
 
-    ac  = t["tp_c"] if action == "BUY" else t["sl_c"]
-    ts  = datetime.datetime.now(UK_TZ).strftime("%H:%M %Z")
+    # ── Layout ────────────────────────────────────────────────────────────────
+    ts = datetime.datetime.now(UK_TZ).strftime("%H:%M %Z")
     fig.update_layout(
         title=dict(
-            text=(f"<b>{pair}</b>  \u00b7  {action}  \u00b7  Projected path"
-                  f"  <span style='font-size:11px;color:{t['txt']}88'>{ts}</span>"),
-            font=dict(color=ac, size=14)),
-        height=500, paper_bgcolor=t["bg"], plot_bgcolor=t["bg"],
+            text=(f"<b>{pair}</b>"
+                  f"  <span style='color:{DIR_C};font-weight:900;'>{action}</span>"
+                  f"  <span style='font-size:10px;color:{TXT};opacity:.55;'>"
+                  f"\u00b7 AI Price Forecast \u00b7 {ts}</span>"),
+            font=dict(color=TXT, size=14, family=FONT)),
+        height=560,
+        paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis_rangeslider_visible=False,
-        font=dict(color=t["txt"], size=10,
-                  family="-apple-system,'Inter',sans-serif"),
-        margin=dict(l=8, r=8, t=46, b=8),
+        font=dict(color=TXT, size=10, family=FONT),
+        margin=dict(l=8, r=100, t=52, b=8),
         hovermode="x unified",
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        legend=dict(
+            bgcolor="rgba(19,23,34,0.7)",
+            bordercolor=GRID, borderwidth=1,
+            font=dict(color=TXT, size=10),
+            orientation="h", x=0, y=1.055),
         transition=dict(duration=0),
-        uirevision=f"pred_{pair}_{int(issued_at)}",
-        dragmode="pan",
+        uirevision=str(uirev),
+        dragmode=dragmode,
     )
-    base_style = dict(gridcolor=t["grid"], gridwidth=1, zerolinecolor=t["grid"],
-                      tickfont=dict(color=t["txt"]), showgrid=True)
+    base_style = dict(gridcolor=GRID, gridwidth=1, zerolinecolor=GRID,
+                      tickfont=dict(color=TXT, size=9, family=FONT),
+                      showgrid=True)
     x_style    = dict(**base_style, spikesnap="cursor", spikemode="across",
-                      spikethickness=1, spikecolor="rgba(255,255,255,0.25)")
-    fig.update_layout(xaxis=x_style, yaxis=base_style)
+                      spikethickness=1, spikecolor="rgba(178,181,190,0.3)")
+    fig.update_layout(xaxis=x_style, xaxis2=x_style,
+                      yaxis=base_style, yaxis2=base_style)
     return fig
 
 
@@ -1705,51 +1793,55 @@ flex-wrap:wrap;gap:28px;align-items:center;">
 </div>""", unsafe_allow_html=True)
 
         # ── prediction chart ──────────────────────────────────────────────────
+        drag_mode = chart_toolbar("drag_pred", "rev_pred")
         fig = build_prediction_chart(
             df, pred_pair, act, entry, tp, sl,
             tp_pips, sl_pips,
-            issued_at=sig.get("issued_at", 0))
+            issued_at=sig.get("issued_at", 0),
+            dragmode=drag_mode,
+            uirev=st.session_state["rev_pred"])
         st.plotly_chart(fig, use_container_width=True, key="pred_chart",
                         config={"displayModeBar": True, "scrollZoom": True,
                                 "modeBarButtonsToRemove": ["select2d", "lasso2d"]})
 
         # ── legend + reasoning ────────────────────────────────────────────────
-        dir_word = "upward" if act == "BUY" else "downward"
         reasons_html = "<br>".join(
             f"&bull; {r}" for r in sig.get("reasons", ["Signal confirmed"])[:5])
 
-        st.markdown(f"""
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;">
-
-  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
-  border-radius:14px;padding:16px 18px;">
-    <div style="font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
-    color:#0a84ff;margin-bottom:10px;">📊 How to read this chart</div>
-    <div style="font-size:.83rem;color:rgba(255,255,255,.62);line-height:1.82;">
-      <b style="color:#fff">Solid candles</b> — real historical price data<br>
-      <b style="color:{ac_c}">Faded candles</b> — AI projected {dir_word} path<br>
-      <b style="color:rgba(255,255,255,.38)">Shaded corridor</b> — expected ATR volatility range<br>
-      <b style="color:#ffd60a">Dotted vertical line</b> — current moment (NOW)<br>
-      <b style="color:#30d158">Dashed green line</b> — take profit target (TP)<br>
-      <b style="color:#ff453a">Dashed red line</b> — stop loss level (SL)
-    </div>
+        lc1, lc2 = st.columns(2)
+        with lc1:
+            st.markdown(f"""
+<div style="background:rgba(19,23,34,.9);border:1px solid rgba(30,34,45,.9);
+border-radius:14px;padding:16px 18px;height:100%;">
+  <div style="font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  color:#b2b5be;margin-bottom:10px;">📊 How to read this chart</div>
+  <div style="font-size:.83rem;color:rgba(178,181,190,.75);line-height:1.9;">
+    <b style="color:#b2b5be">Normal candles (left)</b> — real historical price data<br>
+    <b style="color:{ac_c}">Faded candles (right)</b> — AI-projected path (median scenario)<br>
+    <b style="color:rgba(255,255,255,.45)">Wide shaded cone</b> — 80% of 100 simulated price paths<br>
+    <b style="color:rgba(255,255,255,.45)">Narrow shaded cone</b> — 50% most likely paths<br>
+    <b style="color:{ac_c}">Dotted line</b> — median forecast path<br>
+    <b style="color:#ffd60a">Gold line</b> — EMA 20 &nbsp;|&nbsp; <b style="color:#9580ff">Purple line</b> — EMA 50<br>
+    <b style="color:#26a69a">Teal dashed</b> — Take Profit &nbsp;|&nbsp; <b style="color:#ef5350">Red dashed</b> — Stop Loss<br>
+    <b style="color:#2962ff">Blue dotted</b> — Entry price
   </div>
-
-  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
-  border-radius:14px;padding:16px 18px;">
-    <div style="font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
-    color:#ffd60a;margin-bottom:10px;">⚡ Why {act} — signal reasons</div>
-    <div style="font-size:.83rem;color:rgba(255,255,255,.62);line-height:1.82;">
-      {reasons_html}
-    </div>
+</div>""", unsafe_allow_html=True)
+        with lc2:
+            st.markdown(f"""
+<div style="background:rgba(19,23,34,.9);border:1px solid rgba(30,34,45,.9);
+border-radius:14px;padding:16px 18px;height:100%;">
+  <div style="font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+  color:#b2b5be;margin-bottom:10px;">⚡ Why {act} — AI signal reasons</div>
+  <div style="font-size:.83rem;color:rgba(178,181,190,.75);line-height:1.9;">
+    {reasons_html}
   </div>
+</div>""", unsafe_allow_html=True)
 
-</div>
-
+        st.markdown("""
 <div style="margin-top:12px;padding:11px 15px;background:rgba(255,214,10,.05);
 border:1px solid rgba(255,214,10,.15);border-radius:10px;font-size:.75rem;
 color:rgba(255,255,255,.4);line-height:1.7;">
-  ⚠&nbsp; This projection is a <b>technical estimate</b> based on current momentum,
+  &#9888;&nbsp; This projection is a <b>technical estimate</b> based on current momentum,
   ATR volatility and indicator alignment. Markets can move against any signal at any time.
   Always use your stop loss. This is not financial advice.
 </div>""", unsafe_allow_html=True)
