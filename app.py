@@ -262,7 +262,8 @@ BEAR_WORDS = {
 # ══════════════════════════════════════════════════════════════════════════════
 for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False),
                ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0),
-               ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan")]:
+               ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan"),
+               ("voice_muted", False)]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -278,6 +279,7 @@ def calc_profit(amount, lev, pips, ps, price):
 
 def speak(key, text):
     if not IS_MAC: return
+    if st.session_state.get("voice_muted", False): return
     if text != st.session_state.get(f"_spoke_{key}", ""):
         st.session_state[f"_spoke_{key}"] = text
         try:
@@ -725,6 +727,154 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1", dragmo
     return fig
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PREDICTION CHART — historical + projected future candles
+# ══════════════════════════════════════════════════════════════════════════════
+def build_prediction_chart(df, pair, action, entry, tp, sl, tp_pips, sl_pips, issued_at=0):
+    """
+    Builds a Plotly chart showing historical candles + AI-projected future path.
+
+    Historical: last 50 real candles.
+    Projected : 20 forward candles drifting in signal direction using ATR
+                volatility + momentum decay (uncertainty grows over time).
+    Overlays  : TP / SL / Entry lines, shaded expected-path corridor.
+    """
+    t = dict(bg="#000000", bg2="rgba(0,0,0,0.85)", grid="#1a1a1a",
+             up="#30d158", dn="#ff453a", tp_c="#30d158", sl_c="#ff453a",
+             en_c="#ffd60a", txt="#ffffff")
+
+    last = df.tail(50).copy()
+    ps   = pip_size(pair)
+
+    # ATR for realistic volatility
+    h, lo, c = last["High"], last["Low"], last["Close"]
+    tr_s  = pd.concat([(h - lo),
+                        (h - c.shift()).abs(),
+                        (lo - c.shift()).abs()], axis=1).max(axis=1)
+    atr = float(tr_s.rolling(14).mean().iloc[-1])
+    if np.isnan(atr) or atr <= 0:
+        atr = tp_pips * ps * 0.5
+
+    # candle time-delta
+    td = (last.index[-1] - last.index[-2]) if len(last.index) >= 2 else pd.Timedelta(minutes=5)
+
+    last_close = float(last["Close"].iloc[-1])
+    last_time  = last.index[-1]
+    n_proj     = 20
+
+    # deterministic RNG per signal so projection doesn't flicker on every refresh
+    rng = np.random.default_rng(int(issued_at) % (2**31))
+
+    # drift: aim to reach TP by ~75 % of projected bars, decaying as uncertainty grows
+    total_drift   = tp - last_close
+    drift_per_bar = total_drift / (n_proj * 0.75)
+
+    proj_times  = [last_time + td * (i + 1) for i in range(n_proj)]
+    proj_opens, proj_closes, proj_highs, proj_lows = [], [], [], []
+
+    cur = last_close
+    for i in range(n_proj):
+        fade  = max(0.25, 1.0 - i / n_proj)          # confidence decays further out
+        noise = float(rng.normal(0, atr * 0.55))
+        o     = cur + float(rng.normal(0, atr * 0.07))
+        cl    = o + drift_per_bar * fade + noise
+        # soft-clamp: don't project more than 10 % beyond TP or SL
+        if action == "BUY":
+            cl = max(sl * 0.999, min(tp * 1.01, cl))
+        else:
+            cl = min(sl * 1.001, max(tp * 0.99, cl))
+        hi  = max(o, cl) + abs(float(rng.normal(0, atr * 0.22)))
+        lo_ = min(o, cl) - abs(float(rng.normal(0, atr * 0.22)))
+        proj_opens.append(o);  proj_closes.append(cl)
+        proj_highs.append(hi); proj_lows.append(lo_)
+        cur = cl
+
+    # ── build figure ──────────────────────────────────────────────────────────
+    fig = make_subplots(rows=1, cols=1)
+
+    # historical candles
+    fig.add_trace(go.Candlestick(
+        x=last.index, open=last["Open"], high=last["High"],
+        low=last["Low"],  close=last["Close"],
+        increasing_fillcolor=t["up"], increasing_line_color=t["up"],
+        decreasing_fillcolor=t["dn"], decreasing_line_color=t["dn"],
+        name="Historical", line_width=1))
+
+    # projected candles (translucent)
+    p_up = "rgba(48,209,88,0.50)"  if action == "BUY" else "rgba(255,69,58,0.50)"
+    p_dn = "rgba(255,69,58,0.50)"  if action == "BUY" else "rgba(48,209,88,0.50)"
+    fig.add_trace(go.Candlestick(
+        x=proj_times,
+        open=proj_opens, high=proj_highs,
+        low=proj_lows,   close=proj_closes,
+        increasing_fillcolor=p_up, increasing_line_color=p_up,
+        decreasing_fillcolor=p_dn, decreasing_line_color=p_dn,
+        name="Projected path", line_width=1, opacity=0.55))
+
+    # shaded expected-path corridor
+    env_top = [max(h_, c_) + atr * 0.18 for h_, c_ in zip(proj_highs, proj_closes)]
+    env_bot = [min(l_, c_) - atr * 0.18 for l_, c_ in zip(proj_lows,  proj_closes)]
+    zone_f  = "rgba(48,209,88,0.07)"  if action == "BUY" else "rgba(255,69,58,0.07)"
+    zone_l  = "rgba(48,209,88,0.18)"  if action == "BUY" else "rgba(255,69,58,0.18)"
+    fig.add_trace(go.Scatter(
+        x=proj_times + proj_times[::-1],
+        y=env_top    + env_bot[::-1],
+        fill="toself", fillcolor=zone_f,
+        line=dict(color=zone_l, width=0.8),
+        showlegend=False, hoverinfo="skip"))
+
+    # vertical "NOW" divider
+    fig.add_shape(type="line", x0=last_time, x1=last_time,
+                  y0=0, y1=1, yref="paper",
+                  line=dict(color="rgba(255,255,255,0.22)", width=1, dash="dot"))
+    fig.add_annotation(x=last_time, y=0.98, xref="x", yref="paper",
+                       text="<b>NOW</b>", showarrow=False,
+                       yanchor="top",
+                       font=dict(color="rgba(255,255,255,0.32)", size=9),
+                       bgcolor="rgba(0,0,0,0)", borderpad=2)
+
+    # TP / SL / Entry horizontal lines (only over projected area)
+    x_end = proj_times[-1]
+    for pv, clr, lbl in [
+        (tp,    t["tp_c"], f"TP  {tp:.5f}  (+{tp_pips}p)"),
+        (sl,    t["sl_c"], f"SL  {sl:.5f}  (\u2212{sl_pips}p)"),
+        (entry, t["en_c"], f"Entry  {entry:.5f}"),
+    ]:
+        fig.add_shape(type="line", x0=last_time, x1=x_end, y0=pv, y1=pv,
+                      line=dict(color=clr, width=1.4, dash="dash"))
+        fig.add_annotation(
+            x=x_end, y=pv, xref="x", yref="y",
+            text=f"<b>{lbl}</b>", showarrow=False,
+            xanchor="right", yanchor="middle",
+            font=dict(color=clr, size=10),
+            bgcolor=t["bg2"], borderpad=3, opacity=0.92)
+
+    ac  = t["tp_c"] if action == "BUY" else t["sl_c"]
+    ts  = datetime.datetime.now(UK_TZ).strftime("%H:%M %Z")
+    fig.update_layout(
+        title=dict(
+            text=(f"<b>{pair}</b>  \u00b7  {action}  \u00b7  Projected path"
+                  f"  <span style='font-size:11px;color:{t['txt']}88'>{ts}</span>"),
+            font=dict(color=ac, size=14)),
+        height=500, paper_bgcolor=t["bg"], plot_bgcolor=t["bg"],
+        xaxis_rangeslider_visible=False,
+        font=dict(color=t["txt"], size=10,
+                  family="-apple-system,'Inter',sans-serif"),
+        margin=dict(l=8, r=8, t=46, b=8),
+        hovermode="x unified",
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        transition=dict(duration=0),
+        uirevision=f"pred_{pair}_{int(issued_at)}",
+        dragmode="pan",
+    )
+    base_style = dict(gridcolor=t["grid"], gridwidth=1, zerolinecolor=t["grid"],
+                      tickfont=dict(color=t["txt"]), showgrid=True)
+    x_style    = dict(**base_style, spikesnap="cursor", spikemode="across",
+                      spikethickness=1, spikecolor="rgba(255,255,255,0.25)")
+    fig.update_layout(xaxis=x_style, yaxis=base_style)
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  AI SCREENSHOT CONFIRM
 # ══════════════════════════════════════════════════════════════════════════════
 def chart_toolbar(drag_key: str, rev_key: str):
@@ -797,7 +947,7 @@ def ai_confirm(img_bytes, pair, action, entry, tp, sl):
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── header ────────────────────────────────────────────────────────────────────
-hl, hr = st.columns([4,2])
+hl, hm, hr = st.columns([4, 0.55, 1.45])
 with hl:
     st.markdown("""
 <div style='padding:26px 0 0'>
@@ -807,6 +957,19 @@ with hl:
     <span style='color:rgba(255,255,255,.28);font-weight:300;font-size:1.3rem;display:block;margin-top:3px;'>9-indicator AI · Live news · Always online</span>
   </div>
 </div>""", unsafe_allow_html=True)
+with hm:
+    st.markdown("<div style='height:38px'></div>", unsafe_allow_html=True)
+    _muted = st.session_state.get("voice_muted", False)
+    _mute_icon = "🔇" if _muted else "🔊"
+    _mute_tip  = "Voice muted — click to unmute" if _muted else "Voice alerts on — click to mute"
+    if st.button(_mute_icon, key="mute_btn", use_container_width=True, help=_mute_tip):
+        st.session_state["voice_muted"] = not _muted
+        st.rerun()
+    if _muted:
+        st.markdown(
+            "<div style='text-align:center;font-size:.58rem;color:rgba(255,69,58,.65);"
+            "margin-top:2px;letter-spacing:.04em;'>MUTED</div>",
+            unsafe_allow_html=True)
 with hr:
     @st.fragment(run_every="5s")
     def clock():
@@ -870,11 +1033,12 @@ leverage = LEVERAGE_MAP[lev_label]
 st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
-T1, T2, T3, T4 = st.tabs([
+T1, T2, T3, T4, T5 = st.tabs([
     "◉  Best Trade Now",
     "◎  Market Intelligence",
     "▦  Platform Guide",
     "◷  Confirm Setup",
+    "📈  Price Prediction",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1292,6 +1456,75 @@ with T3:
             ]
             st.markdown(make_steps(steps,"snum-ig"), unsafe_allow_html=True)
 
+        # ── P&L CALCULATOR ───────────────────────────────────────────────────
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        st.markdown("""
+<div style='border-top:1px solid rgba(255,255,255,.07);margin:8px 0 18px;'></div>
+<div style='margin-bottom:14px;'>
+  <div class='eyebrow'>💰 PROFIT / LOSS CALCULATOR</div>
+  <div style='font-size:1.1rem;font-weight:800;letter-spacing:-.02em;color:#fff;'>
+    How much will you make or lose on this trade?
+  </div>
+  <div style='font-size:.82rem;color:rgba(255,255,255,.35);margin-top:2px;'>
+    Enter any amount and leverage — calculated against the current signal for {gp}
+  </div>
+</div>""".replace("{gp}", guide_pair), unsafe_allow_html=True)
+
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            calc_amt = st.number_input(
+                "Your trade amount (£)", min_value=1.0, max_value=100000.0,
+                value=float(st.session_state.get("amt_gbp", 20.0)),
+                step=10.0, key="calc_amt")
+        with cc2:
+            calc_lev_lbl = st.selectbox(
+                "Leverage", list(LEVERAGE_MAP.keys()), index=2, key="calc_lev_lbl")
+            calc_lev = LEVERAGE_MAP[calc_lev_lbl]
+
+        calc_ps   = pip_size(guide_pair)
+        calc_win  = calc_profit(calc_amt, calc_lev, tp_p, calc_ps, entry)
+        calc_lose = calc_profit(calc_amt, calc_lev, sl_p, calc_ps, entry)
+        calc_rr   = calc_win / max(calc_lose, 0.01)
+        rr_col    = "#30d158" if calc_rr >= 1.5 else ("#ffd60a" if calc_rr >= 1.0 else "#ff453a")
+        rr_lbl    = "✅ Good ratio" if calc_rr >= 1.5 else ("⚠️ Acceptable" if calc_rr >= 1.0 else "❌ Poor ratio")
+        pos_size  = calc_amt * calc_lev
+
+        st.markdown(f"""
+<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
+border-radius:16px;padding:22px 26px;margin-top:8px;">
+  <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:center;">
+
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">Position size</div>
+      <div style="font-size:1.55rem;font-weight:900;color:#fff;letter-spacing:-.03em;">£{pos_size:,.0f}</div>
+      <div style="font-size:.72rem;color:rgba(255,255,255,.3);">£{calc_amt:.0f} &times; {calc_lev}x leverage</div>
+    </div>
+
+    <div style="width:1px;background:rgba(255,255,255,.07);height:52px;align-self:center;"></div>
+
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">If Take Profit hit</div>
+      <div style="font-size:1.9rem;font-weight:900;color:#30d158;letter-spacing:-.03em;">+£{calc_win:.2f}</div>
+      <div style="font-size:.72rem;color:rgba(48,209,88,.5);">{tp:.5f} &nbsp;·&nbsp; +{tp_p} pips</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">If Stop Loss hit</div>
+      <div style="font-size:1.9rem;font-weight:900;color:#ff453a;letter-spacing:-.03em;">&#8722;£{calc_lose:.2f}</div>
+      <div style="font-size:.72rem;color:rgba(255,69,58,.5);">{sl:.5f} &nbsp;·&nbsp; &minus;{sl_p} pips</div>
+    </div>
+
+    <div style="width:1px;background:rgba(255,255,255,.07);height:52px;align-self:center;"></div>
+
+    <div style="display:flex;flex-direction:column;gap:3px;">
+      <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;">Risk / Reward</div>
+      <div style="font-size:1.9rem;font-weight:900;color:{rr_col};letter-spacing:-.03em;">{calc_rr:.1f}:1</div>
+      <div style="font-size:.72rem;color:{rr_col};opacity:.65;">{rr_lbl}</div>
+    </div>
+
+  </div>
+</div>""", unsafe_allow_html=True)
+
     guide()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1386,6 +1619,143 @@ with T4:
     else:
         st.markdown('<div style="color:rgba(255,255,255,.25);font-size:.83rem;">Run scanner to load values.</div>',
                     unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 5 — PRICE PREDICTION
+# ══════════════════════════════════════════════════════════════════════════════
+with T5:
+    @st.fragment(run_every=60)
+    def prediction_tab():
+        st.markdown("""
+<div style='margin-bottom:18px;'>
+  <div class='eyebrow'>AI PRICE PREDICTION</div>
+  <div class='stitle'>Where price may go next</div>
+  <div class='ssub'>Projected path based on momentum, ATR volatility &amp; signal direction — TP and SL zones clearly marked</div>
+</div>""", unsafe_allow_html=True)
+
+        sigs = st.session_state.get("signals", {})
+        if not sigs:
+            st.markdown(
+                "<div style='text-align:center;padding:60px;color:rgba(255,255,255,.25);'>"
+                "⟳ Run the scanner first (◉ Best Trade Now tab)</div>",
+                unsafe_allow_html=True)
+            return
+
+        pred_pair = st.selectbox("Select pair to predict", list(PAIRS.keys()), key="pred_pair")
+        sig = sigs.get(pred_pair)
+
+        if sig is None:
+            st.markdown(
+                "<div style='padding:30px;text-align:center;color:rgba(255,255,255,.25);'>"
+                "⟳ No signal for this pair — run scanner again.</div>",
+                unsafe_allow_html=True)
+            return
+
+        act     = sig["action"]
+        entry   = sig["entry"]
+        tp      = sig["tp"];       sl      = sig["sl"]
+        tp_pips = sig["tp_pips"];  sl_pips = sig["sl_pips"]
+        conf    = sig["confidence"]
+        df      = sig.get("df")
+
+        # try to get fresh data for a sharper chart
+        fresh = fetch_df(PAIRS[pred_pair], tf_int, tf_per)
+        if fresh is not None and len(fresh) > 40:
+            df = fresh
+
+        if df is None or len(df) < 20:
+            st.warning("Not enough historical data to generate a prediction for this pair.")
+            return
+
+        ac_c = "#30d158" if act == "BUY" else ("#ff453a" if act == "SELL" else "#ffd60a")
+
+        # ── summary card ──────────────────────────────────────────────────────
+        st.markdown(f"""
+<div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
+border-radius:16px;padding:18px 22px;margin-bottom:18px;display:flex;
+flex-wrap:wrap;gap:28px;align-items:center;">
+
+  <div>
+    <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Predicted direction</div>
+    <div style="font-size:2.2rem;font-weight:900;color:{ac_c};letter-spacing:-.04em;">{act}</div>
+    <div style="font-size:.8rem;color:rgba(255,255,255,.35);">{pred_pair}</div>
+  </div>
+
+  <div>
+    <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Entry price</div>
+    <div style="font-size:1.1rem;font-weight:700;font-family:monospace;">{entry:.5f}</div>
+  </div>
+
+  <div>
+    <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Take Profit target</div>
+    <div style="font-size:1.1rem;font-weight:700;color:#30d158;font-family:monospace;">{tp:.5f}</div>
+    <div style="font-size:.72rem;color:rgba(48,209,88,.5);">+{tp_pips} pips</div>
+  </div>
+
+  <div>
+    <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">Stop Loss</div>
+    <div style="font-size:1.1rem;font-weight:700;color:#ff453a;font-family:monospace;">{sl:.5f}</div>
+    <div style="font-size:.72rem;color:rgba(255,69,58,.5);">&#8722;{sl_pips} pips</div>
+  </div>
+
+  <div style="margin-left:auto;text-align:right;">
+    <div style="font-size:.63rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">AI confidence</div>
+    <div style="font-size:1.9rem;font-weight:900;color:{ac_c};">{conf}%</div>
+  </div>
+
+</div>""", unsafe_allow_html=True)
+
+        # ── prediction chart ──────────────────────────────────────────────────
+        fig = build_prediction_chart(
+            df, pred_pair, act, entry, tp, sl,
+            tp_pips, sl_pips,
+            issued_at=sig.get("issued_at", 0))
+        st.plotly_chart(fig, use_container_width=True, key="pred_chart",
+                        config={"displayModeBar": True, "scrollZoom": True,
+                                "modeBarButtonsToRemove": ["select2d", "lasso2d"]})
+
+        # ── legend + reasoning ────────────────────────────────────────────────
+        dir_word = "upward" if act == "BUY" else "downward"
+        reasons_html = "<br>".join(
+            f"&bull; {r}" for r in sig.get("reasons", ["Signal confirmed"])[:5])
+
+        st.markdown(f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;">
+
+  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
+  border-radius:14px;padding:16px 18px;">
+    <div style="font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:#0a84ff;margin-bottom:10px;">📊 How to read this chart</div>
+    <div style="font-size:.83rem;color:rgba(255,255,255,.62);line-height:1.82;">
+      <b style="color:#fff">Solid candles</b> — real historical price data<br>
+      <b style="color:{ac_c}">Faded candles</b> — AI projected {dir_word} path<br>
+      <b style="color:rgba(255,255,255,.38)">Shaded corridor</b> — expected ATR volatility range<br>
+      <b style="color:#ffd60a">Dotted vertical line</b> — current moment (NOW)<br>
+      <b style="color:#30d158">Dashed green line</b> — take profit target (TP)<br>
+      <b style="color:#ff453a">Dashed red line</b> — stop loss level (SL)
+    </div>
+  </div>
+
+  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
+  border-radius:14px;padding:16px 18px;">
+    <div style="font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:#ffd60a;margin-bottom:10px;">⚡ Why {act} — signal reasons</div>
+    <div style="font-size:.83rem;color:rgba(255,255,255,.62);line-height:1.82;">
+      {reasons_html}
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:12px;padding:11px 15px;background:rgba(255,214,10,.05);
+border:1px solid rgba(255,214,10,.15);border-radius:10px;font-size:.75rem;
+color:rgba(255,255,255,.4);line-height:1.7;">
+  ⚠&nbsp; This projection is a <b>technical estimate</b> based on current momentum,
+  ATR volatility and indicator alignment. Markets can move against any signal at any time.
+  Always use your stop loss. This is not financial advice.
+</div>""", unsafe_allow_html=True)
+
+    prediction_tab()
 
 # ── footer ────────────────────────────────────────────────────────────────────
 st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
