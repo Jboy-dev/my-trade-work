@@ -732,38 +732,35 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1", dragmo
 def build_prediction_chart(df, pair, action, entry, tp, sl,
                            tp_pips, sl_pips, issued_at=0, dragmode="pan", uirev="1"):
     """
-    TradingView-accurate prediction chart.
+    TradingView Long/Short Position tool style — matches exactly what the user sees on TV.
 
-    Historical section (left of NOW):
-      • Candlesticks in TradingView teal/red palette
-      • EMA 20 (gold) + EMA 50 (purple) overlays
-      • Volume sub-chart below (matching TV layout)
-
-    Forecast section (right of NOW):
-      • 100-scenario Monte Carlo → 10th/25th/50th/75th/90th percentile bands
-      • Outer shaded cone  = 80 % of scenarios  (wide, light fill)
-      • Inner shaded cone  = 50 % of scenarios  (narrow, stronger fill)
-      • Median path line   = dotted, in signal colour
-      • Projected candles  = semi-transparent, median-aligned
-      • TP / SL / Entry    = dashed horizontal lines with right-side price badges
-      • "AI FORECAST →"    label at the NOW divider
+    Left of NOW  : Real historical candles + EMA 20/50 + Volume (TV dark palette)
+    Right of NOW :
+      • GREEN filled rectangle  = Profit zone  (entry → TP)
+      • RED   filled rectangle  = Loss zone    (entry → SL)
+      • Entry line (blue) running across the full chart width
+      • AI forecast dotted path drifting through the profit zone
+      • Solid-colour right-side price badges for TP / SL / Entry (TV style)
+      • "PROFIT ZONE" / "LOSS ZONE" labels centred in each rectangle
     """
-    # ── TradingView dark palette ───────────────────────────────────────────────
+    # ── TradingView dark-theme palette ────────────────────────────────────────
     BG   = "#131722"
-    BG2  = "rgba(19,23,34,0.94)"
     GRID = "#1e222d"
-    UP   = "#26a69a"     # TradingView bullish teal
-    DN   = "#ef5350"     # TradingView bearish red
+    UP   = "#26a69a"          # TV bullish teal
+    DN   = "#ef5350"          # TV bearish red
     TP_C = "#26a69a"
     SL_C = "#ef5350"
-    EN_C = "#2962ff"     # TradingView entry blue
-    TXT  = "#b2b5be"     # TradingView body text
+    EN_C = "#2962ff"          # TV blue (entry / long position colour)
+    TXT  = "#b2b5be"
     FONT = "'Trebuchet MS','Verdana',sans-serif"
 
-    DIR_C     = UP if action == "BUY" else DN
-    CONE_FILL = "rgba(38,166,154,0.07)"  if action == "BUY" else "rgba(239,83,80,0.07)"
-    CONE_INNER= "rgba(38,166,154,0.13)"  if action == "BUY" else "rgba(239,83,80,0.13)"
-    CONE_LINE = "rgba(38,166,154,0.22)"  if action == "BUY" else "rgba(239,83,80,0.22)"
+    # Zone fills — same as TV's Long/Short Position tool
+    PROFIT_FILL = "rgba(38,166,154,0.15)"
+    PROFIT_EDGE = "rgba(38,166,154,0.50)"
+    LOSS_FILL   = "rgba(239,83,80,0.12)"
+    LOSS_EDGE   = "rgba(239,83,80,0.45)"
+
+    DIR_C = TP_C if action == "BUY" else SL_C
 
     # ── Data prep ─────────────────────────────────────────────────────────────
     last = df.tail(60).copy()
@@ -780,57 +777,37 @@ def build_prediction_chart(df, pair, action, entry, tp, sl,
     td         = (last.index[-1] - last.index[-2]) if len(last.index) >= 2 else pd.Timedelta(minutes=5)
     last_close = float(last["Close"].iloc[-1])
     last_time  = last.index[-1]
-    n_proj     = 24   # ~same number of candles TradingView's forecast tool shows
+    n_proj     = 30
+    proj_times = [last_time + td * (i + 1) for i in range(n_proj)]
+    x_end      = proj_times[-1]
 
-    # ── Monte Carlo forecast (100 scenarios) ──────────────────────────────────
-    rng          = np.random.default_rng(int(issued_at) % (2**31))
-    total_drift  = tp - last_close
-    n_scenarios  = 100
-    all_paths    = np.zeros((n_scenarios, n_proj))
-
-    for s in range(n_scenarios):
+    # Forecast path — 100-scenario median (for the dotted line only)
+    rng         = np.random.default_rng(int(issued_at) % (2**31))
+    total_drift = tp - last_close
+    all_paths   = np.zeros((100, n_proj))
+    for s in range(100):
         cur = last_close
         for i in range(n_proj):
-            fade  = max(0.15, 1.0 - i / n_proj)        # drift weakens over time
+            fade  = max(0.15, 1.0 - i / n_proj)
             drift = (total_drift / (n_proj * 0.72)) * fade
-            noise = float(rng.normal(0, atr * 0.45))
+            noise = float(rng.normal(0, atr * 0.35))
             cur   = cur + drift + noise
             if action == "BUY":
-                cur = max(sl * 0.997, min(tp * 1.02, cur))
+                cur = max(sl * 0.998, min(tp * 1.002, cur))
             else:
-                cur = min(sl * 1.003, max(tp * 0.98, cur))
+                cur = min(sl * 1.002, max(tp * 0.998, cur))
             all_paths[s, i] = cur
-
-    p10 = np.percentile(all_paths, 10, axis=0)
-    p25 = np.percentile(all_paths, 25, axis=0)
-    p50 = np.percentile(all_paths, 50, axis=0)   # median
-    p75 = np.percentile(all_paths, 75, axis=0)
-    p90 = np.percentile(all_paths, 90, axis=0)
-
-    proj_times = [last_time + td * (i + 1) for i in range(n_proj)]
-
-    # Projected candles aligned to median path
-    rng2 = np.random.default_rng(int(issued_at * 3 + 7) % (2**31))
-    p_opens, p_closes, p_highs, p_lows = [], [], [], []
-    cur = last_close
-    for i in range(n_proj):
-        cl  = float(p50[i])
-        o   = cur + float(rng2.normal(0, atr * 0.04))
-        hi  = max(o, cl) + abs(float(rng2.normal(0, atr * 0.12)))
-        lo_ = min(o, cl) - abs(float(rng2.normal(0, atr * 0.12)))
-        p_opens.append(o);  p_closes.append(cl)
-        p_highs.append(hi); p_lows.append(lo_)
-        cur = cl
+    p50 = np.percentile(all_paths, 50, axis=0)   # median path
 
     # EMAs
     ema20 = last["Close"].ewm(span=20, adjust=False).mean()
     ema50 = last["Close"].ewm(span=50, adjust=False).mean()
 
-    # ── Build figure (candlestick + volume, 2 rows — TradingView layout) ──────
+    # ── Figure — 2 rows (main + volume), like TradingView ─────────────────────
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
                         row_heights=[0.77, 0.23], vertical_spacing=0.01)
 
-    # ── 1. Historical candles ─────────────────────────────────────────────────
+    # ── 1. Historical candlesticks ────────────────────────────────────────────
     fig.add_trace(go.Candlestick(
         x=last.index,
         open=last["Open"], high=last["High"],
@@ -839,53 +816,17 @@ def build_prediction_chart(df, pair, action, entry, tp, sl,
         decreasing_fillcolor=DN, decreasing_line_color=DN,
         name="Price", line_width=1), row=1, col=1)
 
-    # ── 2. EMA 20 + EMA 50 (standard TradingView indicator colours) ──────────
+    # ── 2. EMA 20 (gold) + EMA 50 (purple) ───────────────────────────────────
     fig.add_trace(go.Scatter(
         x=last.index, y=ema20,
-        line=dict(color="rgba(255,214,10,0.65)", width=1.3),
+        line=dict(color="rgba(255,214,10,0.70)", width=1.4),
         name="EMA 20", showlegend=True), row=1, col=1)
     fig.add_trace(go.Scatter(
         x=last.index, y=ema50,
-        line=dict(color="rgba(149,128,255,0.65)", width=1.3),
+        line=dict(color="rgba(149,128,255,0.70)", width=1.4),
         name="EMA 50", showlegend=True), row=1, col=1)
 
-    # ── 3. Forecast outer cone — 80 % of scenarios ───────────────────────────
-    fig.add_trace(go.Scatter(
-        x=proj_times + proj_times[::-1],
-        y=list(p90) + list(p10[::-1]),
-        fill="toself", fillcolor=CONE_FILL,
-        line=dict(color=CONE_LINE, width=0.6),
-        showlegend=False, hoverinfo="skip",
-        name="80% range"), row=1, col=1)
-
-    # ── 4. Forecast inner cone — 50 % of scenarios ───────────────────────────
-    fig.add_trace(go.Scatter(
-        x=proj_times + proj_times[::-1],
-        y=list(p75) + list(p25[::-1]),
-        fill="toself", fillcolor=CONE_INNER,
-        line=dict(color="rgba(0,0,0,0)", width=0),
-        showlegend=False, hoverinfo="skip",
-        name="50% range"), row=1, col=1)
-
-    # ── 5. Median path (dotted line) ─────────────────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=proj_times, y=p50,
-        line=dict(color=DIR_C, width=2, dash="dot"),
-        showlegend=True, name="AI median path"), row=1, col=1)
-
-    # ── 6. Projected candles on median ───────────────────────────────────────
-    pu = f"rgba(38,166,154,0.52)"  if action == "BUY" else "rgba(239,83,80,0.52)"
-    pd_= f"rgba(239,83,80,0.52)"  if action == "BUY" else "rgba(38,166,154,0.52)"
-    fig.add_trace(go.Candlestick(
-        x=proj_times,
-        open=p_opens, high=p_highs,
-        low=p_lows,   close=p_closes,
-        increasing_fillcolor=pu, increasing_line_color=pu,
-        decreasing_fillcolor=pd_, decreasing_line_color=pd_,
-        name="Projected candles", line_width=1,
-        showlegend=False, opacity=0.6), row=1, col=1)
-
-    # ── 7. Volume bars (TradingView style — coloured by candle direction) ─────
+    # ── 3. Volume bars ────────────────────────────────────────────────────────
     vol_c = [UP if float(cl) >= float(op) else DN
              for cl, op in zip(last["Close"], last["Open"])]
     fig.add_trace(go.Bar(
@@ -893,40 +834,103 @@ def build_prediction_chart(df, pair, action, entry, tp, sl,
         marker_color=vol_c, marker_opacity=0.45,
         showlegend=False, name="Volume"), row=2, col=1)
 
-    # ── 8. "NOW" vertical divider ─────────────────────────────────────────────
-    fig.add_shape(type="line", x0=last_time, x1=last_time,
-                  y0=0, y1=1, yref="paper",
-                  line=dict(color="rgba(255,255,255,0.20)", width=1.2, dash="dot"))
-    fig.add_annotation(
-        x=proj_times[0], y=0.985, xref="x", yref="paper",
-        text=f"<b>AI FORECAST \u2192</b>",
-        showarrow=False, xanchor="left", yanchor="top",
-        font=dict(color=DIR_C, size=9, family=FONT),
-        bgcolor="rgba(0,0,0,0)", borderpad=2)
+    # ── 4. Profit zone rectangle (green) — matches TV Long Position tool ──────
+    # BUY : profit above entry (entry → TP),  loss below (SL → entry)
+    # SELL: profit below entry (TP → entry),   loss above (entry → SL)
+    if action != "SELL":
+        profit_lo, profit_hi = entry, tp
+        loss_lo,   loss_hi   = sl,    entry
+    else:
+        profit_lo, profit_hi = tp,    entry
+        loss_lo,   loss_hi   = entry, sl
 
-    # ── 9. Current price horizontal dashed line ───────────────────────────────
-    x_end = proj_times[-1]
-    fig.add_shape(type="line", x0=last.index[0], x1=last_time,
-                  y0=last_close, y1=last_close,
-                  line=dict(color="rgba(255,255,255,0.15)", width=1, dash="dot"),
+    fig.add_shape(type="rect",
+                  x0=last_time, x1=x_end,
+                  y0=profit_lo, y1=profit_hi,
+                  fillcolor=PROFIT_FILL,
+                  line=dict(color=PROFIT_EDGE, width=1),
                   row=1, col=1)
 
-    # ── 10. TP / SL / Entry — TradingView-style dashed lines + right badge ────
-    for pv, clr, lbl, dash in [
-        (tp,    TP_C, f"TP  {tp:.5f}  +{tp_pips}p",     "dash"),
-        (sl,    SL_C, f"SL  {sl:.5f}  \u2212{sl_pips}p", "dash"),
-        (entry, EN_C, f"Entry  {entry:.5f}",              "dot"),
+    # ── 5. Loss zone rectangle (red) ─────────────────────────────────────────
+    fig.add_shape(type="rect",
+                  x0=last_time, x1=x_end,
+                  y0=loss_lo, y1=loss_hi,
+                  fillcolor=LOSS_FILL,
+                  line=dict(color=LOSS_EDGE, width=1),
+                  row=1, col=1)
+
+    # ── 6. Entry line — full width, blue solid (TV Long/Short tool style) ─────
+    fig.add_shape(type="line",
+                  x0=last.index[0], x1=x_end,
+                  y0=entry, y1=entry,
+                  line=dict(color=EN_C, width=1.8, dash="solid"),
+                  row=1, col=1)
+
+    # ── 7. TP line (top edge of profit zone) ─────────────────────────────────
+    fig.add_shape(type="line",
+                  x0=last_time, x1=x_end,
+                  y0=tp, y1=tp,
+                  line=dict(color=TP_C, width=1.4, dash="solid"),
+                  row=1, col=1)
+
+    # ── 8. SL line (bottom edge of loss zone) ────────────────────────────────
+    fig.add_shape(type="line",
+                  x0=last_time, x1=x_end,
+                  y0=sl, y1=sl,
+                  line=dict(color=SL_C, width=1.4, dash="solid"),
+                  row=1, col=1)
+
+    # ── 9. AI forecast median path (dotted, stays inside profit zone) ─────────
+    fig.add_trace(go.Scatter(
+        x=proj_times, y=p50,
+        line=dict(color=DIR_C, width=1.8, dash="dot"),
+        showlegend=True, name="AI forecast path"), row=1, col=1)
+
+    # ── 10. "NOW" vertical divider ────────────────────────────────────────────
+    fig.add_shape(type="line",
+                  x0=last_time, x1=last_time,
+                  y0=0, y1=1, yref="paper",
+                  line=dict(color="rgba(255,255,255,0.28)", width=1.5, dash="dot"))
+    fig.add_annotation(
+        x=last_time, y=0.985, xref="x", yref="paper",
+        text="<b>NOW</b>",
+        showarrow=False, xanchor="right", yanchor="top",
+        font=dict(color="rgba(255,255,255,0.38)", size=9, family=FONT),
+        bgcolor="rgba(0,0,0,0)", borderpad=2)
+
+    # ── 11. Zone labels inside rectangles (centred, like TV position tool) ────
+    mid_x = proj_times[n_proj // 2]
+    fig.add_annotation(
+        x=mid_x, y=(profit_lo + profit_hi) / 2,
+        xref="x", yref="y",
+        text=f"<b>PROFIT ZONE &nbsp; +{tp_pips} pips</b>",
+        showarrow=False, xanchor="center", yanchor="middle",
+        font=dict(color=TP_C, size=11, family=FONT),
+        bgcolor="rgba(0,0,0,0)", opacity=0.85)
+
+    fig.add_annotation(
+        x=mid_x, y=(loss_lo + loss_hi) / 2,
+        xref="x", yref="y",
+        text=f"<b>LOSS ZONE &nbsp; \u2212{sl_pips} pips</b>",
+        showarrow=False, xanchor="center", yanchor="middle",
+        font=dict(color=SL_C, size=11, family=FONT),
+        bgcolor="rgba(0,0,0,0)", opacity=0.85)
+
+    # ── 12. Right-side price badges (solid colour fill — exact TV style) ──────
+    #  TradingView shows filled rectangles on the right Y-axis price scale.
+    #  Plotly annotations at x=x_end with solid bgcolor replicate this.
+    for pv, clr, lbl in [
+        (tp,    TP_C, f"  TP  {tp:.5f}  "),
+        (sl,    SL_C, f"  SL  {sl:.5f}  "),
+        (entry, EN_C, f"  Entry  {entry:.5f}  "),
     ]:
-        fig.add_shape(type="line", x0=last_time, x1=x_end, y0=pv, y1=pv,
-                      line=dict(color=clr, width=1.6, dash=dash),
-                      row=1, col=1)
-        # Right-side price label (mimics TradingView's price tag on Y-axis)
         fig.add_annotation(
             x=x_end, y=pv, xref="x", yref="y",
             text=f"<b>{lbl}</b>",
             showarrow=False, xanchor="right", yanchor="middle",
-            font=dict(color=clr, size=10, family="'Courier New',monospace"),
-            bgcolor=BG2, borderpad=4, opacity=0.97)
+            font=dict(color="#ffffff", size=10,
+                      family="'Courier New',monospace"),
+            bgcolor=clr, borderpad=5, opacity=0.97)
 
     # ── Layout ────────────────────────────────────────────────────────────────
     ts = datetime.datetime.now(UK_TZ).strftime("%H:%M %Z")
@@ -934,20 +938,20 @@ def build_prediction_chart(df, pair, action, entry, tp, sl,
         title=dict(
             text=(f"<b>{pair}</b>"
                   f"  <span style='color:{DIR_C};font-weight:900;'>{action}</span>"
-                  f"  <span style='font-size:10px;color:{TXT};opacity:.55;'>"
+                  f"  <span style='font-size:10px;color:{TXT};opacity:.5;'>"
                   f"\u00b7 AI Price Forecast \u00b7 {ts}</span>"),
             font=dict(color=TXT, size=14, family=FONT)),
-        height=560,
+        height=570,
         paper_bgcolor=BG, plot_bgcolor=BG,
         xaxis_rangeslider_visible=False,
         font=dict(color=TXT, size=10, family=FONT),
-        margin=dict(l=8, r=100, t=52, b=8),
+        margin=dict(l=8, r=130, t=52, b=8),   # extra right margin for price badges
         hovermode="x unified",
         legend=dict(
-            bgcolor="rgba(19,23,34,0.7)",
+            bgcolor="rgba(19,23,34,0.75)",
             bordercolor=GRID, borderwidth=1,
             font=dict(color=TXT, size=10),
-            orientation="h", x=0, y=1.055),
+            orientation="h", x=0, y=1.06),
         transition=dict(duration=0),
         uirevision=str(uirev),
         dragmode=dragmode,
