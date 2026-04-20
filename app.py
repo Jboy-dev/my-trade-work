@@ -17,6 +17,10 @@ from plotly.subplots import make_subplots
 import time, datetime, subprocess, platform, requests
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from zoneinfo import ZoneInfo
+
+# ── UK timezone (auto-handles GMT ↔ BST switchover) ──────────────────────────
+UK_TZ = ZoneInfo("Europe/London")
 
 # ── platform guards ───────────────────────────────────────────────────────────
 IS_MAC = platform.system() == "Darwin"
@@ -338,14 +342,19 @@ def fetch_calendar():
     try:
         r = requests.get(ECON_URL, timeout=8,
                          headers={"User-Agent":"FXProTrader/3.0"})
-        now = datetime.datetime.utcnow()
-        evs = []
+        now    = datetime.datetime.now(datetime.timezone.utc)
+        evs    = []
         for ev in r.json():
             try:
-                dt = datetime.datetime.fromisoformat(ev.get("date","").replace("Z",""))
-                if dt >= now - datetime.timedelta(hours=2):
+                # parse as UTC, then convert to UK time (GMT or BST)
+                dt_utc = datetime.datetime.fromisoformat(
+                    ev.get("date","").replace("Z","")
+                ).replace(tzinfo=datetime.timezone.utc)
+                dt = dt_utc.astimezone(UK_TZ)
+                if dt_utc >= now - datetime.timedelta(hours=2):
+                    tz_lbl = dt.strftime("%Z")   # "GMT" or "BST"
                     evs.append({
-                        "time": dt.strftime("%H:%M UTC"),
+                        "time": f"{dt.strftime('%H:%M')} {tz_lbl}",
                         "currency": ev.get("country","").upper(),
                         "event": ev.get("title",""),
                         "impact": ev.get("impact","low").lower(),
@@ -689,7 +698,7 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1", dragmo
                          showlegend=False), row=2, col=1)
 
     ac = {"BUY":t["tp_c"],"SELL":t["sl_c"]}.get(action, t["en_c"])
-    ts = datetime.datetime.now().strftime("%H:%M")
+    ts = datetime.datetime.now(UK_TZ).strftime("%H:%M %Z")
     fig.update_layout(
         title=dict(text=f"<b>{pair}</b>  ·  {action}  <span style='font-size:11px;color:{t['txt']}88'>updated {ts}</span>",
                    font=dict(color=ac, size=14)),
@@ -799,17 +808,51 @@ with hl:
   </div>
 </div>""", unsafe_allow_html=True)
 with hr:
-    # Clock lives entirely inside its own fragment — no external placeholder to clear
     @st.fragment(run_every="5s")
     def clock():
-        n  = datetime.datetime.now()
-        mo = n.weekday() < 5 and 6 <= n.hour < 22
+        n      = datetime.datetime.now(UK_TZ)          # always UK time
+        tz_lbl = n.strftime("%Z")                       # "GMT" or "BST"
+        wday   = n.weekday()                            # 0=Mon … 6=Sun
+        hr_now = n.hour + n.minute / 60
+
+        # ── Forex sessions in UK time ──────────────────────────────────────
+        # Sydney  00:00–09:00 UK  |  Tokyo  00:00–09:00 UK
+        # London  08:00–17:00 UK  |  New York 13:00–22:00 UK
+        # Overlap (London + NY, highest liquidity) 13:00–17:00 UK
+        is_weekday = wday < 5
+        in_london  = is_weekday and  8.0 <= hr_now < 17.0
+        in_ny      = is_weekday and 13.0 <= hr_now < 22.0
+        in_overlap = is_weekday and 13.0 <= hr_now < 17.0
+        in_asian   = is_weekday and (hr_now >= 23.0 or hr_now < 9.0)
+        any_open   = is_weekday and (6.0 <= hr_now < 22.0)
+
+        if in_overlap:
+            session_html = "<span style='color:#30d158;font-weight:700;'>🔥 London+NY Overlap — Peak liquidity</span>"
+        elif in_london and in_ny:
+            session_html = "<span style='color:#30d158;'>London + New York open</span>"
+        elif in_london:
+            session_html = "<span style='color:#0a84ff;'>🇬🇧 London session open</span>"
+        elif in_ny:
+            session_html = "<span style='color:#ffd60a;'>🇺🇸 New York session open</span>"
+        elif in_asian:
+            session_html = "<span style='color:#8b5cf6;'>🌏 Asian session</span>"
+        elif is_weekday:
+            session_html = "<span style='color:rgba(255,255,255,.35);'>Between sessions</span>"
+        else:
+            session_html = "<span style='color:rgba(255,255,255,.25);'>Weekend — markets closed</span>"
+
+        dot_color = "#30d158" if any_open and is_weekday else "#ff453a"
+
         st.markdown(
-            f"<div style='text-align:right;color:rgba(255,255,255,.3);font-size:.8rem;"
-            f"padding-top:36px;font-variant-numeric:tabular-nums;'>"
-            f"<span class='ldot'></span>"
-            f"{'MARKETS OPEN' if mo else 'MARKETS CLOSED'}<br>"
-            f"{n.strftime('%H:%M:%S')} · {n.strftime('%a %d %b %Y')}</div>",
+            f"<div style='text-align:right;color:rgba(255,255,255,.3);font-size:.78rem;"
+            f"padding-top:32px;font-variant-numeric:tabular-nums;line-height:1.9;'>"
+            f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;"
+            f"background:{dot_color};box-shadow:0 0 7px {dot_color}88;"
+            f"margin-right:5px;'></span>"
+            f"<b style='color:#fff'>{n.strftime('%H:%M:%S')}</b> {tz_lbl}<br>"
+            f"{n.strftime('%a %d %b %Y')}<br>"
+            f"{session_html}"
+            f"</div>",
             unsafe_allow_html=True)
     clock()
 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
@@ -1082,7 +1125,7 @@ with T2:
                 st.markdown('<div class="intel"><div class="intel-lbl">STATUS</div>No news loaded — check internet connection.</div>',
                             unsafe_allow_html=True)
             st.markdown(f"<div style='font-size:.67rem;color:rgba(255,255,255,.18);margin-top:6px;'>"
-                        f"🔄 Auto-refreshes every 5 min · {datetime.datetime.now().strftime('%H:%M')}</div>",
+                        f"🔄 Auto-refreshes every 5 min · {datetime.datetime.now(UK_TZ).strftime('%H:%M %Z')}</div>",
                         unsafe_allow_html=True)
 
         with e_col:
