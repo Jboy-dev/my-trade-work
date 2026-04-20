@@ -183,15 +183,12 @@ hr{border:none;border-top:1px solid rgba(255,255,255,.06)!important;margin:1.5re
 .intel{background:rgba(10,132,255,.07);border:1px solid rgba(10,132,255,.2);border-radius:14px;padding:14px 16px;margin-bottom:10px;}
 .intel-lbl{font-size:.67rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#0a84ff;margin-bottom:6px;}
 
-/* ── scanning pulse ── */
-@keyframes scanPulse{0%,100%{opacity:1}50%{opacity:.45}}
-.scanning{animation:scanPulse 1.4s ease-in-out infinite;}
-@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.fade{animation:fadeUp .35s ease-out forwards;}
-
-/* ── live dot ── */
-@keyframes dotPulse{0%,100%{box-shadow:0 0 0 0 rgba(48,209,88,.5)}70%{box-shadow:0 0 0 5px rgba(48,209,88,0)}}
-.ldot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#30d158;animation:dotPulse 2s ease-in-out infinite;margin-right:5px;}
+/* ── NO opacity/visibility animations — they cause visible blink on fragment refresh ── */
+.scanning{color:rgba(255,255,255,.45);}
+.fade{opacity:1;}
+/* live dot — static glow, no flicker */
+.ldot{display:inline-block;width:7px;height:7px;border-radius:50%;
+      background:#30d158;box-shadow:0 0 7px rgba(48,209,88,.55);margin-right:5px;}
 
 /* ── section headings ── */
 .eyebrow{font-size:.67rem;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:rgba(255,255,255,.28);margin-bottom:5px;}
@@ -750,20 +747,19 @@ with hl:
   </div>
 </div>""", unsafe_allow_html=True)
 with hr:
-    clk_ph = st.empty()
-
-@st.fragment(run_every="1s")
-def clock():
-    n  = datetime.datetime.now()
-    mo = n.weekday()<5 and 6<=n.hour<22
-    clk_ph.markdown(
-        f"<div style='text-align:right;color:rgba(255,255,255,.3);font-size:.8rem;"
-        f"padding-top:36px;font-variant-numeric:tabular-nums;'>"
-        f"<span class='ldot'></span>"
-        f"{'MARKETS OPEN' if mo else 'MARKETS CLOSED'}<br>"
-        f"{n.strftime('%H:%M:%S')} · {n.strftime('%a %d %b %Y')}</div>",
-        unsafe_allow_html=True)
-clock()
+    # Clock lives entirely inside its own fragment — no external placeholder to clear
+    @st.fragment(run_every="5s")
+    def clock():
+        n  = datetime.datetime.now()
+        mo = n.weekday() < 5 and 6 <= n.hour < 22
+        st.markdown(
+            f"<div style='text-align:right;color:rgba(255,255,255,.3);font-size:.8rem;"
+            f"padding-top:36px;font-variant-numeric:tabular-nums;'>"
+            f"<span class='ldot'></span>"
+            f"{'MARKETS OPEN' if mo else 'MARKETS CLOSED'}<br>"
+            f"{n.strftime('%H:%M:%S')} · {n.strftime('%a %d %b %Y')}</div>",
+            unsafe_allow_html=True)
+    clock()
 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
 # ── settings ──────────────────────────────────────────────────────────────────
@@ -791,11 +787,8 @@ T1, T2, T3, T4 = st.tabs([
 #  EVERYTHING is inside @st.fragment → zero full-page blink
 # ══════════════════════════════════════════════════════════════════════════════
 with T1:
-    hero_ph   = st.empty()
-    strip_ph  = st.empty()
-    grid_ph   = st.empty()
-    # chart placeholder is INSIDE the fragment below — key stays stable
-
+    # No st.empty() placeholders outside the fragment — those cause a clear→refill blink.
+    # Everything renders directly inside the fragment; Streamlit diffs the subtree in place.
     @st.fragment(run_every=30)
     def scanner():
         # ── Scan button lives INSIDE the fragment: clicking it only reruns the fragment
@@ -804,37 +797,34 @@ with T1:
             do_scan = st.button("⟳  Scan All 10 Markets", type="primary",
                                 use_container_width=True, key="scan_btn")
         with top_r:
-            status_ph = st.empty()
+            # show scanning status inline — no external placeholder
+            scanning_now = False
+            now   = time.time()
+            sigs  = st.session_state.get("signals", {})
+            rescan = bool(do_scan)
 
-        now   = time.time()
-        sigs  = st.session_state.get("signals", {})
-        rescan = bool(do_scan)
+            if st.session_state.get("auto_rescan", True):
+                if not sigs or (now - st.session_state.get("last_scan",0)) > tf_val:
+                    rescan = True
+                elif any(s and expired(s["issued_at"],s["valid_secs"]) for s in sigs.values()):
+                    rescan = True
 
-        if st.session_state.get("auto_rescan", True):
-            if not sigs or (now - st.session_state.get("last_scan",0)) > tf_val:
-                rescan = True
-            elif any(s and expired(s["issued_at"],s["valid_secs"]) for s in sigs.values()):
-                rescan = True
-
-        if rescan:
-            status_ph.markdown(
-                "<div class='scanning' style='color:rgba(255,255,255,.45);font-size:.83rem;margin-top:8px;'>"
-                "⟳ Scanning all 10 markets — live prices · news · 9-indicator AI…</div>",
-                unsafe_allow_html=True)
-            news    = fetch_news()
-            pair_s  = build_pair_sentiment(news)
-            new_sigs = {}
-            with ThreadPoolExecutor(max_workers=10) as ex:
-                futs = {ex.submit(scan_one,p,y,tf_int,tf_per,tf_val,tf_label,pair_s):p
-                        for p,y in PAIRS.items()}
-                for f in as_completed(futs):
-                    p, s = f.result()
-                    new_sigs[p] = s
-            st.session_state["signals"] = new_sigs
-            st.session_state["last_scan"] = now
-            status_ph.empty()
-        else:
-            status_ph.empty()
+            if rescan:
+                st.markdown(
+                    "<div style='color:rgba(255,255,255,.4);font-size:.78rem;margin-top:8px;'>"
+                    "⟳ Scanning…</div>",
+                    unsafe_allow_html=True)
+                news   = fetch_news()
+                pair_s = build_pair_sentiment(news)
+                new_sigs = {}
+                with ThreadPoolExecutor(max_workers=10) as ex:
+                    futs = {ex.submit(scan_one,p,y,tf_int,tf_per,tf_val,tf_label,pair_s):p
+                            for p,y in PAIRS.items()}
+                    for f in as_completed(futs):
+                        p, s = f.result()
+                        new_sigs[p] = s
+                st.session_state["signals"] = new_sigs
+                st.session_state["last_scan"] = now
 
         sigs = st.session_state.get("signals", {})
         if not sigs:
@@ -873,8 +863,8 @@ with T1:
             acls   = "action-buy" if act=="BUY" else "action-sell"
             bcls   = "conf-buy"  if act=="BUY" else "conf-sell"
 
-            hero_ph.markdown(f"""
-<div class="hero {hcls} fade">
+            st.markdown(f"""
+<div class="hero {hcls}">
   <div class="conf-badge {bcls}">{conf}% confidence</div>
   <div class="hero-eyebrow">◉ STRONGEST SIGNAL RIGHT NOW</div>
   <div class="hero-action {acls}">{act}</div>
@@ -915,10 +905,10 @@ with T1:
                                f'<div class="ti-pr">{pr:.5f}</div>'
                                f'<div class="{chg_c}">{sgn}{chg:.3f}%</div></div>')
         strip_html += '</div>'
-        strip_ph.markdown(strip_html, unsafe_allow_html=True)
+        st.markdown(strip_html, unsafe_allow_html=True)
 
         # ── ALL PAIRS GRID ─────────────────────────────────────────────────────
-        with grid_ph.container():
+        if True:
             st.markdown("""
 <div style='margin:4px 0 14px'>
   <div class='eyebrow'>ALL 10 MARKETS</div>
