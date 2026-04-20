@@ -190,6 +190,10 @@ hr{border:none;border-top:1px solid rgba(255,255,255,.06)!important;margin:1.5re
 .ldot{display:inline-block;width:7px;height:7px;border-radius:50%;
       background:#30d158;box-shadow:0 0 7px rgba(48,209,88,.55);margin-right:5px;}
 
+/* ── chart toolbar ── */
+.chart-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;}
+.ct-label{font-size:.7rem;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.08em;margin-right:4px;}
+
 /* ── section headings ── */
 .eyebrow{font-size:.67rem;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:rgba(255,255,255,.28);margin-bottom:5px;}
 .stitle{font-size:1.55rem;font-weight:800;letter-spacing:-.03em;color:#fff;margin-bottom:3px;}
@@ -253,7 +257,8 @@ BEAR_WORDS = {
 #  SESSION STATE
 # ══════════════════════════════════════════════════════════════════════════════
 for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False),
-               ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0)]:
+               ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0),
+               ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan")]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -612,7 +617,7 @@ def scan_one(pair, yf_sym, interval, period, valid_secs, tf_label, news_sent):
 # ══════════════════════════════════════════════════════════════════════════════
 #  CHART BUILDER — interactive Plotly, platform themes
 # ══════════════════════════════════════════════════════════════════════════════
-def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1"):
+def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1", dragmode="pan"):
     palettes = {
         "dark":        dict(bg="#000000",bg2="rgba(0,0,0,0.82)",
                             grid="#1a1a1a",up="#30d158",dn="#ff453a",
@@ -696,8 +701,8 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1"):
         hovermode="x unified",
         legend=dict(bgcolor="rgba(0,0,0,0)"),
         transition=dict(duration=0),
-        # changing uirevision resets zoom/pan back to default view
         uirevision=str(uirev),
+        dragmode=dragmode,   # "pan" = drag to move · "zoom" = drag to zoom box
     )
     # spike props are only valid on xaxis, NOT yaxis — keep them separate
     base_style = dict(gridcolor=t["grid"], gridwidth=1,
@@ -713,6 +718,53 @@ def build_chart(df, pair, action, entry, tp, sl, theme="dark", uirev="1"):
 # ══════════════════════════════════════════════════════════════════════════════
 #  AI SCREENSHOT CONFIRM
 # ══════════════════════════════════════════════════════════════════════════════
+def chart_toolbar(drag_key: str, rev_key: str):
+    """
+    Renders the Move / Zoom toggle + Reset button above a chart.
+    Returns the current dragmode string ("pan" or "zoom").
+    Must be called inside a fragment so buttons only rerun the fragment.
+    """
+    drag_col, zoom_col, reset_col, spacer = st.columns([1.4, 1.4, 0.9, 6])
+
+    current = st.session_state.get(drag_key, "pan")
+    is_pan  = current == "pan"
+
+    with drag_col:
+        # Active button gets a different background via inline style injected via markdown trick;
+        # Streamlit buttons don't support conditional classes directly so we use two buttons.
+        if is_pan:
+            st.markdown(
+                "<div style='background:rgba(48,209,88,.18);border:1px solid rgba(48,209,88,.4);"
+                "border-radius:10px;padding:6px 0;text-align:center;font-size:.82rem;"
+                "font-weight:600;color:#30d158;cursor:default;'>🤚 Move</div>",
+                unsafe_allow_html=True)
+        else:
+            if st.button("🤚 Move", key=f"pan_{drag_key}", use_container_width=True,
+                         help="Drag to move the chart freely"):
+                st.session_state[drag_key] = "pan"
+                st.rerun()
+
+    with zoom_col:
+        if not is_pan:
+            st.markdown(
+                "<div style='background:rgba(10,132,255,.18);border:1px solid rgba(10,132,255,.4);"
+                "border-radius:10px;padding:6px 0;text-align:center;font-size:.82rem;"
+                "font-weight:600;color:#0a84ff;cursor:default;'>🔍 Zoom</div>",
+                unsafe_allow_html=True)
+        else:
+            if st.button("🔍 Zoom", key=f"zoom_{drag_key}", use_container_width=True,
+                         help="Drag to zoom into an area"):
+                st.session_state[drag_key] = "zoom"
+                st.rerun()
+
+    with reset_col:
+        if st.button("↺", key=f"reset_{drag_key}", use_container_width=True,
+                     help="Reset chart zoom & pan to original view"):
+            st.session_state[rev_key] += 1
+
+    return st.session_state.get(drag_key, "pan")
+
+
 def ai_confirm(img_bytes, pair, action, entry, tp, sl):
     if not HAS_OLLAMA:
         return "⚠ Ollama not installed. Visit ollama.com → install → run: ollama pull moondream:latest"
@@ -884,12 +936,10 @@ with T1:
                   f"Top trade: {act} {best_pair.replace('/','')} — {conf} percent confidence.")
 
             # ── hero chart ────────────────────────────────────────────────────
-            _ch_l, _ch_r = st.columns([8, 1])
-            with _ch_r:
-                if st.button("↺", key="reset_hero", help="Reset chart zoom & pan"):
-                    st.session_state["rev_hero"] += 1
+            drag_mode = chart_toolbar("drag_hero", "rev_hero")
             fig = build_chart(best["df"], best_pair, act, entry, tp, sl,
-                              uirev=st.session_state["rev_hero"])
+                              uirev=st.session_state["rev_hero"],
+                              dragmode=drag_mode)
             st.plotly_chart(fig, use_container_width=True, key="hero_chart",
                             config={"displayModeBar":True,"scrollZoom":True,
                                     "modeBarButtonsToRemove":["select2d","lasso2d"]})
@@ -1136,12 +1186,10 @@ with T3:
         # ── MetaTrader ──────────────────────────────────────────────────────
         with pt_mt:
             if df is not None:
-                _ml, _mr = st.columns([8, 1])
-                with _mr:
-                    if st.button("↺", key="reset_mt", help="Reset chart zoom & pan"):
-                        st.session_state["rev_mt"] += 1
+                drag_mode = chart_toolbar("drag_mt", "rev_mt")
                 fig = build_chart(df, guide_pair, act, entry, tp, sl, "metatrader",
-                                  uirev=st.session_state["rev_mt"])
+                                  uirev=st.session_state["rev_mt"],
+                                  dragmode=drag_mode)
                 fig.update_layout(title=dict(text=f"MetaTrader · {guide_pair} · {act}",
                                              font=dict(color="#82b1ff",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="mt_chart",
@@ -1160,12 +1208,10 @@ with T3:
         # ── TradingView ─────────────────────────────────────────────────────
         with pt_tv:
             if df is not None:
-                _tl, _tr = st.columns([8, 1])
-                with _tr:
-                    if st.button("↺", key="reset_tv", help="Reset chart zoom & pan"):
-                        st.session_state["rev_tv"] += 1
+                drag_mode = chart_toolbar("drag_tv", "rev_tv")
                 fig = build_chart(df, guide_pair, act, entry, tp, sl, "tradingview",
-                                  uirev=st.session_state["rev_tv"])
+                                  uirev=st.session_state["rev_tv"],
+                                  dragmode=drag_mode)
                 fig.update_layout(title=dict(text=f"TradingView · {guide_pair} · {act}",
                                              font=dict(color="#26a69a",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="tv_chart",
@@ -1184,12 +1230,10 @@ with T3:
         # ── IG Broker ───────────────────────────────────────────────────────
         with pt_ig:
             if df is not None:
-                _il, _ir = st.columns([8, 1])
-                with _ir:
-                    if st.button("↺", key="reset_ig", help="Reset chart zoom & pan"):
-                        st.session_state["rev_ig"] += 1
+                drag_mode = chart_toolbar("drag_ig", "rev_ig")
                 fig = build_chart(df, guide_pair, act, entry, tp, sl, "ig",
-                                  uirev=st.session_state["rev_ig"])
+                                  uirev=st.session_state["rev_ig"],
+                                  dragmode=drag_mode)
                 fig.update_layout(title=dict(text=f"IG Broker · {guide_pair} · {act}",
                                              font=dict(color="#5b9bd5",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="ig_chart",
