@@ -286,7 +286,8 @@ for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False),
                ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0),("rev_pred",0),
                ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan"),("drag_pred","pan"),
                ("voice_muted", False),
-               ("signal_history",{}),("win_rates",{}),("ind_weights",{})]:
+               ("signal_history",{}),("win_rates",{}),("ind_weights",{}),
+               ("active_signals", {})]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -1515,12 +1516,13 @@ leverage = LEVERAGE_MAP[lev_label]
 st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
 # ── tabs ───────────────────────────────────────────────────────────────────────
-T1, T2, T3, T4, T5 = st.tabs([
+T1, T2, T3, T4, T5, T6 = st.tabs([
     "◉  Best Trade Now",
     "◎  Market Intelligence",
     "▦  Platform Guide",
     "◷  Confirm Setup",
     "📈  Price Prediction",
+    "📌  Signals in Use",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1656,6 +1658,44 @@ with T1:
                             config={"displayModeBar":True,"scrollZoom":True,
                                     "modeBarButtonsToRemove":["select2d","lasso2d"]})
 
+            # ── Hero confirm button ────────────────────────────────────────
+            _hero_id  = f"{best_pair}_{best['issued_at']:.0f}"
+            _h_active = st.session_state.get("active_signals", {})
+            if _hero_id in _h_active:
+                st.markdown("""
+<div style="background:rgba(38,166,154,.1);border:1px solid rgba(38,166,154,.35);
+border-radius:10px;padding:10px 16px;text-align:center;margin:8px 0 4px;
+font-size:.82rem;color:#26a69a;font-weight:700;">
+  ✅ This signal is being tracked in <b>📌 Signals in Use</b>
+</div>""", unsafe_allow_html=True)
+            else:
+                _hc1, _hc2, _hc3 = st.columns([1, 2, 1])
+                with _hc2:
+                    if st.button("📌  Confirm Signal — Add to Signals in Use",
+                                 key="hero_confirm", use_container_width=True, type="primary"):
+                        _h_ps   = pip_size(best_pair)
+                        _h_dir  = 1 if act == "BUY" else -1
+                        _h_dist = abs(best["tp"] - best["entry"])
+                        _h_tp2  = round(best["entry"] + _h_dir * 2 * _h_dist, 5)
+                        _h_tp3  = round(best["entry"] + _h_dir * 3 * _h_dist, 5)
+                        _h_tp2p = max(1, round(abs(_h_tp2 - best["entry"]) / _h_ps)) if _h_ps > 0 else best["tp_pips"] * 2
+                        _h_tp3p = max(1, round(abs(_h_tp3 - best["entry"]) / _h_ps)) if _h_ps > 0 else best["tp_pips"] * 3
+                        _h_rr   = rr
+                        st.session_state["active_signals"][_hero_id] = {
+                            "pair": best_pair, "yf_sym": PAIRS[best_pair],
+                            "action": act, "entry": best["entry"],
+                            "tp": best["tp"], "tp2": _h_tp2, "tp3": _h_tp3,
+                            "sl": best["sl"], "tp_p": best["tp_pips"],
+                            "tp2_p": _h_tp2p, "tp3_p": _h_tp3p,
+                            "sl_p": best["sl_pips"], "confidence": conf,
+                            "confirmed_at": datetime.now(ZoneInfo("Europe/London")).strftime("%d %b %H:%M"),
+                            "confirmed_ts": time.time(), "tf": tf_label,
+                            "reasons": best.get("reasons", [])[:3],
+                            "rr": _h_rr, "regime": best.get("regime", ""),
+                            "risk_amt": 20.0,
+                        }
+                        st.rerun()
+
         # ── TICKER STRIP ──────────────────────────────────────────────────────
         strip_html = '<div class="tstrip">'
         for pair in list(PAIRS.keys())[:10]:
@@ -1748,6 +1788,41 @@ with T1:
                     if act in ("BUY","SELL") and not exp:
                         speak(f"{pair}_{sig['issued_at']:.0f}",
                               f"{pair.replace('/','')} {act}.")
+                        _card_id = f"{pair}_{sig['issued_at']:.0f}"
+                        _c_active = st.session_state.get("active_signals", {})
+                        if _card_id in _c_active:
+                            st.markdown(
+                                '<div style="font-size:.72rem;color:#26a69a;'
+                                'padding:5px 8px;margin-top:4px;">✅ Tracking in Signals in Use</div>',
+                                unsafe_allow_html=True)
+                        else:
+                            if st.button("📌 Confirm Signal", key=f"confirm_card_{pair}",
+                                         use_container_width=True):
+                                _c_ps   = pip_size(pair)
+                                _c_dir  = 1 if act == "BUY" else -1
+                                _c_dist = abs(sig["tp"] - sig["entry"])
+                                _c_tp2  = round(sig["entry"] + _c_dir * 2 * _c_dist, 5)
+                                _c_tp3  = round(sig["entry"] + _c_dir * 3 * _c_dist, 5)
+                                _c_tp2p = max(1, round(abs(_c_tp2 - sig["entry"]) / _c_ps)) if _c_ps > 0 else sig["tp_pips"] * 2
+                                _c_tp3p = max(1, round(abs(_c_tp3 - sig["entry"]) / _c_ps)) if _c_ps > 0 else sig["tp_pips"] * 3
+                                _c_ps2  = pip_size(pair)
+                                _c_win  = calc_profit(20, leverage, sig["tp_pips"], _c_ps2, sig["entry"])
+                                _c_los  = calc_profit(20, leverage, sig["sl_pips"], _c_ps2, sig["entry"])
+                                _c_rr   = _c_win / max(_c_los, 0.01)
+                                st.session_state["active_signals"][_card_id] = {
+                                    "pair": pair, "yf_sym": PAIRS[pair],
+                                    "action": act, "entry": sig["entry"],
+                                    "tp": sig["tp"], "tp2": _c_tp2, "tp3": _c_tp3,
+                                    "sl": sig["sl"], "tp_p": sig["tp_pips"],
+                                    "tp2_p": _c_tp2p, "tp3_p": _c_tp3p,
+                                    "sl_p": sig["sl_pips"], "confidence": sig["confidence"],
+                                    "confirmed_at": datetime.now(ZoneInfo("Europe/London")).strftime("%d %b %H:%M"),
+                                    "confirmed_ts": time.time(), "tf": tf_label,
+                                    "reasons": sig.get("reasons", [])[:3],
+                                    "rr": _c_rr, "regime": sig.get("regime", ""),
+                                    "risk_amt": 20.0,
+                                }
+                                st.rerun()
 
         # ── AI Intelligence Summary ───────────────────────────────────────────
         any_hist = any(
@@ -2800,6 +2875,249 @@ color:#787b86;line-height:1.7;">
 </div>""", unsafe_allow_html=True)
 
     prediction_tab()
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 6 — SIGNALS IN USE
+# ══════════════════════════════════════════════════════════════════════════════
+with T6:
+    @st.fragment(run_every=15)
+    def signals_in_use():
+        active = st.session_state.get("active_signals", {})
+
+        if not active:
+            st.markdown("""
+<div style="text-align:center;padding:70px 20px;">
+  <div style="font-size:3.5rem;margin-bottom:16px;">📌</div>
+  <div style="color:#fff;font-weight:800;font-size:1.25rem;margin-bottom:10px;">No Signals Confirmed Yet</div>
+  <div style="color:rgba(255,255,255,.35);font-size:.88rem;max-width:420px;margin:0 auto;line-height:1.7;">
+    Go to <b style="color:#fff;">◉ Best Trade Now</b> and click
+    <b style="color:#5b9bd5;">📌 Confirm Signal</b> on any trade you want to track.
+    It will appear here with live price tracking.
+  </div>
+</div>""", unsafe_allow_html=True)
+            return
+
+        n = len(active)
+        st.markdown(f"""
+<div style="margin-bottom:20px;">
+  <div class="eyebrow">📌 SIGNALS IN USE</div>
+  <div style="font-size:1.2rem;font-weight:800;letter-spacing:-.02em;color:#fff;">
+    Tracking {n} confirmed trade{"s" if n != 1 else ""}
+  </div>
+  <div style="font-size:.78rem;color:rgba(255,255,255,.35);margin-top:3px;">
+    Live prices refresh every 15 s · Adjust your risk amount · Delete when done
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        to_delete = []
+
+        for sig_id, s in list(active.items()):
+            pair    = s["pair"]
+            yf_sym  = s.get("yf_sym", PAIRS.get(pair, pair))
+            act_s   = s["action"]
+            entry   = s["entry"]
+            tp      = s["tp"]
+            tp2     = s.get("tp2", tp)
+            tp3     = s.get("tp3", tp)
+            sl      = s["sl"]
+            tp_p    = s["tp_p"]
+            tp2_p   = s.get("tp2_p", tp_p * 2)
+            tp3_p   = s.get("tp3_p", tp_p * 3)
+            sl_p    = s["sl_p"]
+            risk_amt = float(s.get("risk_amt", 20.0))
+
+            # ── live price ─────────────────────────────────────────────────
+            cur_price, cur_chg = live_price(yf_sym)
+            if cur_price is None:
+                cur_price = entry
+            chg_col = "#26a69a" if (cur_chg or 0) >= 0 else "#ef5350"
+            chg_str = (f'<span style="color:{chg_col};font-size:.7rem;"> '
+                       f'({("+" if (cur_chg or 0)>=0 else "")}{cur_chg:.3f}%)</span>'
+                       if cur_chg else "")
+
+            # ── progress bar (SL=0% ─ Entry=mid ─ TP1=100%) ───────────────
+            if act_s == "BUY":
+                _total = tp - sl
+                _prog  = (cur_price - sl) / _total * 100 if _total > 0 else 50
+            else:
+                _total = sl - tp
+                _prog  = (sl - cur_price) / _total * 100 if _total > 0 else 50
+            _prog = max(0.0, min(100.0, _prog))
+
+            # ── status ─────────────────────────────────────────────────────
+            _ps = pip_size(pair)
+            if act_s == "BUY":
+                if cur_price <= sl:
+                    _status = "❌ SL Hit"; _sc = "#ef5350"
+                elif cur_price < entry * 0.9999:
+                    _status = "⏳ Waiting — below entry"; _sc = "#ffd60a"
+                elif cur_price >= tp:
+                    _status = "✅ TP1 Hit!"; _sc = "#26a69a"
+                else:
+                    _pct_tp = (cur_price - entry) / max(tp - entry, 1e-10) * 100
+                    _status = f"📈 In Trade · {_pct_tp:.0f}% to TP1"; _sc = "#26a69a"
+            else:
+                if cur_price >= sl:
+                    _status = "❌ SL Hit"; _sc = "#ef5350"
+                elif cur_price > entry * 1.0001:
+                    _status = "⏳ Waiting — above entry"; _sc = "#ffd60a"
+                elif cur_price <= tp:
+                    _status = "✅ TP1 Hit!"; _sc = "#26a69a"
+                else:
+                    _pct_tp = (entry - cur_price) / max(entry - tp, 1e-10) * 100
+                    _status = f"📉 In Trade · {_pct_tp:.0f}% to TP1"; _sc = "#26a69a"
+
+            # ── unrealized P&L ─────────────────────────────────────────────
+            _sl_dist = max(sl_p, 1)
+            if act_s == "BUY":
+                _pips_moved = (cur_price - entry) / _ps if _ps > 0 else 0
+            else:
+                _pips_moved = (entry - cur_price) / _ps if _ps > 0 else 0
+            _unreal = risk_amt * (_pips_moved / _sl_dist)
+            _unreal_col = "#26a69a" if _unreal >= 0 else "#ef5350"
+            _unreal_pfx = "+" if _unreal >= 0 else ""
+
+            # ── projected profits (3-order split) ──────────────────────────
+            _sl_safe = max(sl_p, 1)
+            _pr1 = risk_amt / 3 * (tp_p   / _sl_safe)
+            _pr2 = risk_amt / 3 * (tp2_p  / _sl_safe)
+            _pr3 = risk_amt / 3 * (tp3_p  / _sl_safe)
+            _p_total = _pr1 + _pr2 + _pr3
+
+            # ── card border color ───────────────────────────────────────────
+            _act_col = "#26a69a" if act_s == "BUY" else "#ef5350"
+            _reasons_html = " · ".join(s.get("reasons", [])[:3])
+
+            st.markdown(f"""
+<div style="background:rgba(255,255,255,.04);
+border:1px solid rgba(255,255,255,.1);
+border-left:4px solid {_act_col};
+border-radius:14px;padding:20px 22px;margin-bottom:8px;">
+
+  <!-- header row -->
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
+    <div>
+      <div style="color:{_act_col};font-weight:800;font-size:1.15rem;letter-spacing:.01em;">
+        {act_s} {pair}
+      </div>
+      <div style="color:rgba(255,255,255,.38);font-size:.72rem;margin-top:3px;">
+        {s["confidence"]}% confidence · {s.get("tf","?")} · Confirmed {s["confirmed_at"]}
+        {(' · ' + s.get('regime','')) if s.get('regime') else ''}
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <div style="color:{_sc};font-weight:700;font-size:.88rem;">{_status}</div>
+      <div style="font-size:.7rem;color:rgba(255,255,255,.4);margin-top:3px;">
+        Live: <b style="color:#fff;font-family:monospace;">{cur_price:.5f}</b>{chg_str}
+      </div>
+    </div>
+  </div>
+
+  <!-- progress bar -->
+  <div style="margin-bottom:14px;">
+    <div style="display:flex;justify-content:space-between;
+    font-size:.65rem;color:rgba(255,255,255,.3);margin-bottom:5px;">
+      <span style="color:#ef5350;">⬇ SL {sl:.5f}</span>
+      <span>Entry {entry:.5f}</span>
+      <span style="color:#26a69a;">TP1 {tp:.5f} ⬆</span>
+    </div>
+    <div style="background:rgba(255,255,255,.1);border-radius:6px;height:8px;overflow:hidden;">
+      <div style="height:8px;border-radius:6px;width:{_prog:.1f}%;
+      background:{_sc};transition:width .4s ease;"></div>
+    </div>
+    <div style="margin-top:4px;font-size:.64rem;color:rgba(255,255,255,.28);">
+      {_prog:.0f}% of the way from SL → TP1
+    </div>
+  </div>
+
+  <!-- levels grid -->
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px;">
+    <div style="text-align:center;background:rgba(255,255,255,.04);border-radius:9px;padding:9px 4px;">
+      <div style="color:#ffd60a;font-weight:700;font-size:.77rem;font-family:monospace;">{entry:.5f}</div>
+      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">Entry</div>
+    </div>
+    <div style="text-align:center;background:rgba(38,166,154,.1);border-radius:9px;padding:9px 4px;">
+      <div style="color:#26a69a;font-weight:700;font-size:.77rem;font-family:monospace;">{tp:.5f}</div>
+      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">TP1 · {tp_p}p</div>
+    </div>
+    <div style="text-align:center;background:rgba(38,166,154,.08);border-radius:9px;padding:9px 4px;">
+      <div style="color:#26a69a;font-weight:700;font-size:.77rem;font-family:monospace;">{tp2:.5f}</div>
+      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">TP2 · {tp2_p}p</div>
+    </div>
+    <div style="text-align:center;background:rgba(38,166,154,.06);border-radius:9px;padding:9px 4px;">
+      <div style="color:#26a69a;font-weight:700;font-size:.77rem;font-family:monospace;">{tp3:.5f}</div>
+      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">TP3 · {tp3_p}p</div>
+    </div>
+    <div style="text-align:center;background:rgba(239,83,80,.1);border-radius:9px;padding:9px 4px;">
+      <div style="color:#ef5350;font-weight:700;font-size:.77rem;font-family:monospace;">{sl:.5f}</div>
+      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">SL · {sl_p}p</div>
+    </div>
+  </div>
+
+  <!-- P&L row -->
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+    <div style="background:rgba(255,255,255,.04);border-radius:8px;padding:7px 13px;font-size:.76rem;">
+      <span style="color:rgba(255,255,255,.35);">Unrealized </span>
+      <b style="color:{_unreal_col};">{_unreal_pfx}£{abs(_unreal):.2f}</b>
+    </div>
+    <div style="background:rgba(38,166,154,.08);border-radius:8px;padding:7px 13px;font-size:.76rem;">
+      <span style="color:rgba(255,255,255,.35);">TP1 </span><b style="color:#26a69a;">+£{_pr1:.2f}</b>
+      <span style="color:rgba(255,255,255,.25);margin:0 5px;">·</span>
+      <span style="color:rgba(255,255,255,.35);">TP2 </span><b style="color:#26a69a;">+£{_pr2:.2f}</b>
+      <span style="color:rgba(255,255,255,.25);margin:0 5px;">·</span>
+      <span style="color:rgba(255,255,255,.35);">TP3 </span><b style="color:#26a69a;">+£{_pr3:.2f}</b>
+    </div>
+    <div style="background:rgba(255,255,255,.04);border-radius:8px;padding:7px 13px;font-size:.76rem;">
+      <span style="color:rgba(255,255,255,.35);">Max profit </span>
+      <b style="color:#ffd60a;">+£{_p_total:.2f}</b>
+    </div>
+    <div style="background:rgba(239,83,80,.06);border-radius:8px;padding:7px 13px;font-size:.76rem;">
+      <span style="color:rgba(255,255,255,.35);">Max loss </span>
+      <b style="color:#ef5350;">−£{risk_amt:.2f}</b>
+    </div>
+  </div>
+
+  {(f'<div style="font-size:.71rem;color:rgba(255,255,255,.25);margin-top:8px;">📊 {_reasons_html}</div>') if _reasons_html else ''}
+</div>""", unsafe_allow_html=True)
+
+            # ── risk input + delete row ─────────────────────────────────────
+            _ra1, _ra2, _ra3 = st.columns([2, 3, 1])
+            with _ra1:
+                new_risk = st.number_input(
+                    "Risk (£)", min_value=1.0, max_value=500_000.0,
+                    value=risk_amt, step=5.0,
+                    key=f"risk_siu_{sig_id}",
+                    help="Amount you're risking on this trade")
+                if new_risk != risk_amt:
+                    st.session_state["active_signals"][sig_id]["risk_amt"] = new_risk
+            with _ra2:
+                _sl_s2 = max(sl_p, 1)
+                _p1b = new_risk / 3 * (tp_p  / _sl_s2)
+                _p2b = new_risk / 3 * (tp2_p / _sl_s2)
+                _p3b = new_risk / 3 * (tp3_p / _sl_s2)
+                st.markdown(f"""
+<div style="padding-top:6px;font-size:.75rem;color:rgba(255,255,255,.4);line-height:1.9;">
+  If all 3 TPs hit →
+  <b style="color:#26a69a;">+£{_p1b:.2f}</b> +
+  <b style="color:#26a69a;">+£{_p2b:.2f}</b> +
+  <b style="color:#26a69a;">+£{_p3b:.2f}</b> =
+  <b style="color:#ffd60a;font-size:.82rem;">+£{_p1b+_p2b+_p3b:.2f}</b>
+  &nbsp;·&nbsp; Max loss <b style="color:#ef5350;">−£{new_risk:.2f}</b>
+</div>""", unsafe_allow_html=True)
+            with _ra3:
+                st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ Delete", key=f"del_siu_{sig_id}", use_container_width=True):
+                    to_delete.append(sig_id)
+
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        # ── process deletes ─────────────────────────────────────────────────
+        if to_delete:
+            for _sid in to_delete:
+                del st.session_state["active_signals"][_sid]
+            st.rerun()
+
+    signals_in_use()
 
 # ── footer ────────────────────────────────────────────────────────────────────
 st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
