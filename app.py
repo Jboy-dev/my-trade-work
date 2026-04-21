@@ -2940,7 +2940,46 @@ with T6:
                        f'({("+" if (cur_chg or 0)>=0 else "")}{cur_chg:.3f}%)</span>'
                        if cur_chg else "")
 
-            # ── progress bar (SL=0% ─ Entry=mid ─ TP1=100%) ───────────────
+            # ── projected profits (3-order split) ──────────────────────────
+            _sl_safe = max(sl_p, 1)
+            _ps      = pip_size(pair)
+            _pr1 = risk_amt / 3 * (tp_p   / _sl_safe)
+            _pr2 = risk_amt / 3 * (tp2_p  / _sl_safe)
+            _pr3 = risk_amt / 3 * (tp3_p  / _sl_safe)
+            _p_total = _pr1 + _pr2 + _pr3
+
+            # ── lock outcome once TP or SL is hit (never flips back) ────────
+            outcome       = s.get("outcome")        # None | "WIN_TP1/2/3" | "LOSS"
+            outcome_price = s.get("outcome_price", cur_price)
+            outcome_time  = s.get("outcome_time", "")
+            if outcome is None:
+                hit = None
+                if act_s == "BUY":
+                    if cur_price >= tp3:   hit = "WIN_TP3"
+                    elif cur_price >= tp2: hit = "WIN_TP2"
+                    elif cur_price >= tp:  hit = "WIN_TP1"
+                    elif cur_price <= sl:  hit = "LOSS"
+                else:
+                    if cur_price <= tp3:   hit = "WIN_TP3"
+                    elif cur_price <= tp2: hit = "WIN_TP2"
+                    elif cur_price <= tp:  hit = "WIN_TP1"
+                    elif cur_price >= sl:  hit = "LOSS"
+                if hit:
+                    outcome = hit
+                    outcome_price = cur_price
+                    outcome_time  = datetime.datetime.now(UK_TZ).strftime("%d %b %H:%M")
+                    st.session_state["active_signals"][sig_id]["outcome"]       = outcome
+                    st.session_state["active_signals"][sig_id]["outcome_price"] = outcome_price
+                    st.session_state["active_signals"][sig_id]["outcome_time"]  = outcome_time
+
+            # ── resolved profit/loss amount ─────────────────────────────────
+            if outcome == "WIN_TP3":   _resolved_pnl = _p_total;  _resolved_lbl = "ALL 3 TPs hit"
+            elif outcome == "WIN_TP2": _resolved_pnl = _pr1+_pr2; _resolved_lbl = "TP1 & TP2 hit · TP3 at break-even"
+            elif outcome == "WIN_TP1": _resolved_pnl = _pr1;      _resolved_lbl = "TP1 hit · TP2 & TP3 at break-even"
+            elif outcome == "LOSS":    _resolved_pnl = -risk_amt;  _resolved_lbl = "Stopped out at SL"
+            else:                      _resolved_pnl = 0;          _resolved_lbl = ""
+
+            # ── progress bar ────────────────────────────────────────────────
             if act_s == "BUY":
                 _total = tp - sl
                 _prog  = (cur_price - sl) / _total * 100 if _total > 0 else 50
@@ -2949,140 +2988,181 @@ with T6:
                 _prog  = (sl - cur_price) / _total * 100 if _total > 0 else 50
             _prog = max(0.0, min(100.0, _prog))
 
-            # ── status ─────────────────────────────────────────────────────
-            _ps = pip_size(pair)
+            # ── live status (only used when trade is still active) ──────────
+            _ps_v = pip_size(pair)
             if act_s == "BUY":
-                if cur_price <= sl:
-                    _status = "❌ SL Hit"; _sc = "#ef5350"
-                elif cur_price < entry * 0.9999:
+                if cur_price < entry * 0.9999:
                     _status = "⏳ Waiting — below entry"; _sc = "#ffd60a"
-                elif cur_price >= tp:
-                    _status = "✅ TP1 Hit!"; _sc = "#26a69a"
                 else:
                     _pct_tp = (cur_price - entry) / max(tp - entry, 1e-10) * 100
                     _status = f"📈 In Trade · {_pct_tp:.0f}% to TP1"; _sc = "#26a69a"
             else:
-                if cur_price >= sl:
-                    _status = "❌ SL Hit"; _sc = "#ef5350"
-                elif cur_price > entry * 1.0001:
+                if cur_price > entry * 1.0001:
                     _status = "⏳ Waiting — above entry"; _sc = "#ffd60a"
-                elif cur_price <= tp:
-                    _status = "✅ TP1 Hit!"; _sc = "#26a69a"
                 else:
                     _pct_tp = (entry - cur_price) / max(entry - tp, 1e-10) * 100
                     _status = f"📉 In Trade · {_pct_tp:.0f}% to TP1"; _sc = "#26a69a"
 
-            # ── unrealized P&L ─────────────────────────────────────────────
+            # ── unrealized P&L (active trades only) ────────────────────────
             _sl_dist = max(sl_p, 1)
             if act_s == "BUY":
-                _pips_moved = (cur_price - entry) / _ps if _ps > 0 else 0
+                _pips_moved = (cur_price - entry) / _ps_v if _ps_v > 0 else 0
             else:
-                _pips_moved = (entry - cur_price) / _ps if _ps > 0 else 0
+                _pips_moved = (entry - cur_price) / _ps_v if _ps_v > 0 else 0
             _unreal = risk_amt * (_pips_moved / _sl_dist)
             _unreal_col = "#26a69a" if _unreal >= 0 else "#ef5350"
             _unreal_pfx = "+" if _unreal >= 0 else ""
 
-            # ── projected profits (3-order split) ──────────────────────────
-            _sl_safe = max(sl_p, 1)
-            _pr1 = risk_amt / 3 * (tp_p   / _sl_safe)
-            _pr2 = risk_amt / 3 * (tp2_p  / _sl_safe)
-            _pr3 = risk_amt / 3 * (tp3_p  / _sl_safe)
-            _p_total = _pr1 + _pr2 + _pr3
-
-            # ── card border color ───────────────────────────────────────────
+            # ── card styling ────────────────────────────────────────────────
             _act_col = "#26a69a" if act_s == "BUY" else "#ef5350"
             _reasons_html = " · ".join(s.get("reasons", [])[:3])
 
+            # resolved card gets a strong coloured border + tinted bg
+            if outcome and outcome.startswith("WIN"):
+                _card_bg  = "rgba(38,166,154,.07)"
+                _card_bdr = "rgba(38,166,154,.5)"
+                _card_lbdr = "#26a69a"
+            elif outcome == "LOSS":
+                _card_bg  = "rgba(239,83,80,.07)"
+                _card_bdr = "rgba(239,83,80,.45)"
+                _card_lbdr = "#ef5350"
+            else:
+                _card_bg  = "rgba(255,255,255,.04)"
+                _card_bdr = "rgba(255,255,255,.1)"
+                _card_lbdr = _act_col
+
+            # ── WIN / LOSS result banner HTML ───────────────────────────────
+            if outcome and outcome.startswith("WIN"):
+                _tp_num = {"WIN_TP1":"1","WIN_TP2":"2","WIN_TP3":"3"}.get(outcome,"1")
+                _result_banner = f"""
+<div style="background:rgba(38,166,154,.14);border:1.5px solid rgba(38,166,154,.55);
+border-radius:12px;padding:16px 20px;margin-bottom:14px;display:flex;
+justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+  <div>
+    <div style="font-size:1.5rem;font-weight:900;color:#26a69a;letter-spacing:-.01em;">
+      🏆 YOU WON THIS TRADE!
+    </div>
+    <div style="font-size:.82rem;color:rgba(255,255,255,.55);margin-top:4px;">
+      Take Profit {_tp_num} hit at <b style="color:#fff;">{outcome_price:.5f}</b>
+      {(' · ' + outcome_time) if outcome_time else ''} · {_resolved_lbl}
+    </div>
+  </div>
+  <div style="text-align:right;">
+    <div style="font-size:1.8rem;font-weight:900;color:#26a69a;">+£{_resolved_pnl:.2f}</div>
+    <div style="font-size:.72rem;color:rgba(255,255,255,.35);margin-top:2px;">
+      confirmed profit
+    </div>
+  </div>
+</div>"""
+            elif outcome == "LOSS":
+                _result_banner = f"""
+<div style="background:rgba(239,83,80,.12);border:1.5px solid rgba(239,83,80,.5);
+border-radius:12px;padding:16px 20px;margin-bottom:14px;display:flex;
+justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+  <div>
+    <div style="font-size:1.5rem;font-weight:900;color:#ef5350;letter-spacing:-.01em;">
+      ❌ STOP LOSS HIT
+    </div>
+    <div style="font-size:.82rem;color:rgba(255,255,255,.55);margin-top:4px;">
+      Stopped out at <b style="color:#fff;">{outcome_price:.5f}</b>
+      {(' · ' + outcome_time) if outcome_time else ''} · {_resolved_lbl}
+    </div>
+  </div>
+  <div style="text-align:right;">
+    <div style="font-size:1.8rem;font-weight:900;color:#ef5350;">−£{abs(_resolved_pnl):.2f}</div>
+    <div style="font-size:.72rem;color:rgba(255,255,255,.35);margin-top:2px;">
+      max loss taken
+    </div>
+  </div>
+</div>"""
+            else:
+                _result_banner = ""
+
             st.markdown(f"""
-<div style="background:rgba(255,255,255,.04);
-border:1px solid rgba(255,255,255,.1);
-border-left:4px solid {_act_col};
+<div style="background:{_card_bg};
+border:1px solid {_card_bdr};
+border-left:4px solid {_card_lbdr};
 border-radius:14px;padding:20px 22px;margin-bottom:8px;">
+
+  {_result_banner}
 
   <!-- header row -->
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;">
     <div>
-      <div style="color:{_act_col};font-weight:800;font-size:1.15rem;letter-spacing:.01em;">
+      <div style="color:{_act_col};font-weight:800;font-size:1.1rem;letter-spacing:.01em;">
         {act_s} {pair}
       </div>
-      <div style="color:rgba(255,255,255,.38);font-size:.72rem;margin-top:3px;">
+      <div style="color:rgba(255,255,255,.35);font-size:.7rem;margin-top:3px;">
         {s["confidence"]}% confidence · {s.get("tf","?")} · Confirmed {s["confirmed_at"]}
         {(' · ' + s.get('regime','')) if s.get('regime') else ''}
       </div>
     </div>
     <div style="text-align:right;">
-      <div style="color:{_sc};font-weight:700;font-size:.88rem;">{_status}</div>
-      <div style="font-size:.7rem;color:rgba(255,255,255,.4);margin-top:3px;">
-        Live: <b style="color:#fff;font-family:monospace;">{cur_price:.5f}</b>{chg_str}
+      {'<div style="color:rgba(255,255,255,.3);font-size:.78rem;font-style:italic;">Trade closed</div>' if outcome else f'<div style="color:{_sc};font-weight:700;font-size:.85rem;">{_status}</div>'}
+      <div style="font-size:.68rem;color:rgba(255,255,255,.35);margin-top:3px;">
+        Live: <b style="color:rgba(255,255,255,.7);font-family:monospace;">{cur_price:.5f}</b>{chg_str}
       </div>
     </div>
   </div>
 
-  <!-- progress bar -->
+  <!-- progress bar (shows final state if resolved) -->
   <div style="margin-bottom:14px;">
     <div style="display:flex;justify-content:space-between;
-    font-size:.65rem;color:rgba(255,255,255,.3);margin-bottom:5px;">
+    font-size:.63rem;color:rgba(255,255,255,.28);margin-bottom:5px;">
       <span style="color:#ef5350;">⬇ SL {sl:.5f}</span>
       <span>Entry {entry:.5f}</span>
       <span style="color:#26a69a;">TP1 {tp:.5f} ⬆</span>
     </div>
-    <div style="background:rgba(255,255,255,.1);border-radius:6px;height:8px;overflow:hidden;">
-      <div style="height:8px;border-radius:6px;width:{_prog:.1f}%;
-      background:{_sc};transition:width .4s ease;"></div>
+    <div style="background:rgba(255,255,255,.08);border-radius:6px;height:7px;overflow:hidden;">
+      <div style="height:7px;border-radius:6px;width:{_prog:.1f}%;
+      background:{'#26a69a' if (outcome or '').startswith('WIN') else '#ef5350' if outcome == 'LOSS' else _sc};"></div>
     </div>
-    <div style="margin-top:4px;font-size:.64rem;color:rgba(255,255,255,.28);">
+    <div style="margin-top:3px;font-size:.62rem;color:rgba(255,255,255,.25);">
       {_prog:.0f}% of the way from SL → TP1
     </div>
   </div>
 
   <!-- levels grid -->
   <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px;">
-    <div style="text-align:center;background:rgba(255,255,255,.04);border-radius:9px;padding:9px 4px;">
-      <div style="color:#ffd60a;font-weight:700;font-size:.77rem;font-family:monospace;">{entry:.5f}</div>
-      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">Entry</div>
+    <div style="text-align:center;background:rgba(255,255,255,.04);border-radius:9px;padding:8px 4px;">
+      <div style="color:#ffd60a;font-weight:700;font-size:.76rem;font-family:monospace;">{entry:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.61rem;margin-top:3px;">Entry</div>
     </div>
-    <div style="text-align:center;background:rgba(38,166,154,.1);border-radius:9px;padding:9px 4px;">
-      <div style="color:#26a69a;font-weight:700;font-size:.77rem;font-family:monospace;">{tp:.5f}</div>
-      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">TP1 · {tp_p}p</div>
+    <div style="text-align:center;background:rgba(38,166,154,{'.18' if outcome == 'WIN_TP1' else '.08' if (outcome or '').startswith('WIN') else '.08'});border-radius:9px;padding:8px 4px;">
+      <div style="color:#26a69a;font-weight:700;font-size:.76rem;font-family:monospace;">{tp:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.61rem;margin-top:3px;">TP1 · {tp_p}p {'✅' if (outcome or '').startswith('WIN') else ''}</div>
     </div>
-    <div style="text-align:center;background:rgba(38,166,154,.08);border-radius:9px;padding:9px 4px;">
-      <div style="color:#26a69a;font-weight:700;font-size:.77rem;font-family:monospace;">{tp2:.5f}</div>
-      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">TP2 · {tp2_p}p</div>
+    <div style="text-align:center;background:rgba(38,166,154,{'.18' if outcome in ('WIN_TP2','WIN_TP3') else '.06'});border-radius:9px;padding:8px 4px;">
+      <div style="color:#26a69a;font-weight:700;font-size:.76rem;font-family:monospace;">{tp2:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.61rem;margin-top:3px;">TP2 · {tp2_p}p {'✅' if outcome in ('WIN_TP2','WIN_TP3') else ''}</div>
     </div>
-    <div style="text-align:center;background:rgba(38,166,154,.06);border-radius:9px;padding:9px 4px;">
-      <div style="color:#26a69a;font-weight:700;font-size:.77rem;font-family:monospace;">{tp3:.5f}</div>
-      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">TP3 · {tp3_p}p</div>
+    <div style="text-align:center;background:rgba(38,166,154,{'.18' if outcome == 'WIN_TP3' else '.05'});border-radius:9px;padding:8px 4px;">
+      <div style="color:#26a69a;font-weight:700;font-size:.76rem;font-family:monospace;">{tp3:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.61rem;margin-top:3px;">TP3 · {tp3_p}p {'✅' if outcome == 'WIN_TP3' else ''}</div>
     </div>
-    <div style="text-align:center;background:rgba(239,83,80,.1);border-radius:9px;padding:9px 4px;">
-      <div style="color:#ef5350;font-weight:700;font-size:.77rem;font-family:monospace;">{sl:.5f}</div>
-      <div style="color:rgba(255,255,255,.3);font-size:.62rem;margin-top:3px;">SL · {sl_p}p</div>
+    <div style="text-align:center;background:rgba(239,83,80,{'.18' if outcome == 'LOSS' else '.08'});border-radius:9px;padding:8px 4px;">
+      <div style="color:#ef5350;font-weight:700;font-size:.76rem;font-family:monospace;">{sl:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.61rem;margin-top:3px;">SL · {sl_p}p {'❌' if outcome == 'LOSS' else ''}</div>
     </div>
   </div>
 
   <!-- P&L row -->
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
-    <div style="background:rgba(255,255,255,.04);border-radius:8px;padding:7px 13px;font-size:.76rem;">
-      <span style="color:rgba(255,255,255,.35);">Unrealized </span>
-      <b style="color:{_unreal_col};">{_unreal_pfx}£{abs(_unreal):.2f}</b>
+    {'<div style="background:rgba(255,255,255,.03);border-radius:8px;padding:7px 13px;font-size:.75rem;"><span style="color:rgba(255,255,255,.3);">Unrealized </span><b style="color:' + _unreal_col + ';">' + _unreal_pfx + '£' + f"{abs(_unreal):.2f}" + '</b></div>' if not outcome else ''}
+    <div style="background:rgba(38,166,154,.07);border-radius:8px;padding:7px 13px;font-size:.75rem;">
+      <span style="color:rgba(255,255,255,.3);">TP1 </span><b style="color:#26a69a;">+£{_pr1:.2f}</b>
+      <span style="color:rgba(255,255,255,.2);margin:0 5px;">·</span>
+      <span style="color:rgba(255,255,255,.3);">TP2 </span><b style="color:#26a69a;">+£{_pr2:.2f}</b>
+      <span style="color:rgba(255,255,255,.2);margin:0 5px;">·</span>
+      <span style="color:rgba(255,255,255,.3);">TP3 </span><b style="color:#26a69a;">+£{_pr3:.2f}</b>
     </div>
-    <div style="background:rgba(38,166,154,.08);border-radius:8px;padding:7px 13px;font-size:.76rem;">
-      <span style="color:rgba(255,255,255,.35);">TP1 </span><b style="color:#26a69a;">+£{_pr1:.2f}</b>
-      <span style="color:rgba(255,255,255,.25);margin:0 5px;">·</span>
-      <span style="color:rgba(255,255,255,.35);">TP2 </span><b style="color:#26a69a;">+£{_pr2:.2f}</b>
-      <span style="color:rgba(255,255,255,.25);margin:0 5px;">·</span>
-      <span style="color:rgba(255,255,255,.35);">TP3 </span><b style="color:#26a69a;">+£{_pr3:.2f}</b>
-    </div>
-    <div style="background:rgba(255,255,255,.04);border-radius:8px;padding:7px 13px;font-size:.76rem;">
-      <span style="color:rgba(255,255,255,.35);">Max profit </span>
-      <b style="color:#ffd60a;">+£{_p_total:.2f}</b>
-    </div>
-    <div style="background:rgba(239,83,80,.06);border-radius:8px;padding:7px 13px;font-size:.76rem;">
-      <span style="color:rgba(255,255,255,.35);">Max loss </span>
+    <div style="background:rgba(239,83,80,.05);border-radius:8px;padding:7px 13px;font-size:.75rem;">
+      <span style="color:rgba(255,255,255,.3);">Max loss </span>
       <b style="color:#ef5350;">−£{risk_amt:.2f}</b>
     </div>
   </div>
 
-  {(f'<div style="font-size:.71rem;color:rgba(255,255,255,.25);margin-top:8px;">📊 {_reasons_html}</div>') if _reasons_html else ''}
+  {(f'<div style="font-size:.7rem;color:rgba(255,255,255,.22);margin-top:8px;">📊 {_reasons_html}</div>') if _reasons_html else ''}
 </div>""", unsafe_allow_html=True)
 
             # ── risk input + delete row ─────────────────────────────────────
