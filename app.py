@@ -2100,6 +2100,109 @@ border-radius:14px;padding:18px 22px;margin:0 0 18px;">
             ]
             st.markdown(make_steps(steps,"snum-mt"), unsafe_allow_html=True)
 
+            # ── MT Position Sizing & P&L Calculator ───────────────────────
+            st.markdown("""
+<div style='border-top:1px solid rgba(130,177,255,.18);margin:24px 0 16px;'></div>
+<div style='margin-bottom:4px;'>
+  <div style='color:#82b1ff;font-weight:800;font-size:.95rem;letter-spacing:.05em;'>
+    💰 POSITION SIZING &amp; P&amp;L CALCULATOR
+  </div>
+  <div style='font-size:.78rem;color:rgba(255,255,255,.38);margin-top:3px;'>
+    Enter your balance and risk appetite — see exactly how much you make or lose at each target
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            _mt_calc_sl = max(sl_p, 1)
+            _mt_rr1 = tp_p   / _mt_calc_sl
+            _mt_rr2 = _tp2_p / _mt_calc_sl
+            _mt_rr3 = _tp3_p / _mt_calc_sl
+
+            mtc1, mtc2 = st.columns([3, 2])
+            with mtc1:
+                mt_balance = st.number_input(
+                    "💼 My Account Balance (£)", min_value=10.0, max_value=1_000_000.0,
+                    value=1000.0, step=100.0, key="mt_balance",
+                    help="Your total MetaTrader account balance in £")
+            with mtc2:
+                mt_risk_pct = st.slider(
+                    "🎯 Risk per trade (%)", min_value=0.5, max_value=10.0,
+                    value=2.0, step=0.5, key="mt_risk_pct",
+                    help="Pro traders risk 1–2% max. 5%+ is high risk.")
+
+            mt_risk_amt  = mt_balance * mt_risk_pct / 100
+            mt_per_order = mt_risk_amt / 3
+            mt_p1        = mt_per_order * _mt_rr1
+            mt_p2        = mt_per_order * _mt_rr2
+            mt_p3        = mt_per_order * _mt_rr3
+            mt_net_tp1   = mt_p1
+            mt_net_tp12  = mt_p1 + mt_p2
+            mt_net_all   = mt_p1 + mt_p2 + mt_p3
+            mt_pct       = lambda v: v / max(mt_balance, 1) * 100
+
+            # Risk badge row
+            st.markdown(f"""
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px;">
+  <div style="background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.3);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">MAX RISK</div>
+    <div style="color:#ef5350;font-weight:800;font-size:1.1rem;">−£{mt_risk_amt:.2f}</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">{mt_risk_pct:.1f}% of balance</div>
+  </div>
+  <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">PER ORDER (÷3)</div>
+    <div style="color:#ffd60a;font-weight:800;font-size:1.1rem;">£{mt_per_order:.2f}</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">risk on each TP order</div>
+  </div>
+  <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">ENTRY PRICE</div>
+    <div style="color:#fff;font-weight:800;font-size:1.0rem;">{entry:.5f}</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">{guide_pair} · {act}</div>
+  </div>
+  <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">R:R RATIO</div>
+    <div style="color:#{'26a69a' if rr >= 1.5 else 'ffd60a' if rr >= 1.0 else 'ef5350'};font-weight:800;font-size:1.1rem;">{rr:.1f} : 1</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">{'Good ✅' if rr >= 1.5 else 'Acceptable ⚠️' if rr >= 1.0 else 'Poor ❌'}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            st.markdown("<div style='font-size:.75rem;color:rgba(255,255,255,.35);margin-bottom:8px;'>📊 P&L SCENARIOS — what happens at each outcome:</div>", unsafe_allow_html=True)
+            mts1, mts2, mts3, mts4 = st.columns(4)
+            _mt_sc = [
+                (mts1, "❌  SL Hit",           -mt_risk_amt, f"−{mt_risk_pct:.1f}% of balance",          "#ef5350", "rgba(239,83,80,.08)",  "rgba(239,83,80,.25)"),
+                (mts2, "✅  TP1 → Break-Even",  mt_net_tp1,  f"+{mt_pct(mt_net_tp1):.2f}% · orders 2&3 → BE", "#26a69a", "rgba(38,166,154,.08)", "rgba(38,166,154,.25)"),
+                (mts3, "✅✅  TP1 + TP2",        mt_net_tp12, f"+{mt_pct(mt_net_tp12):.2f}% · order 3 → BE",   "#26a69a", "rgba(38,166,154,.08)", "rgba(38,166,154,.25)"),
+                (mts4, "🏆  All 3 TPs Hit",     mt_net_all,  f"+{mt_pct(mt_net_all):.2f}% on balance",         "#ffd60a", "rgba(255,214,0,.07)",  "rgba(255,214,0,.22)"),
+            ]
+            for col, label, val, sub, tc, bg, bdr in _mt_sc:
+                with col:
+                    prefix = "−" if val < 0 else "+"
+                    st.markdown(f"""
+<div style="background:{bg};border:1px solid {bdr};border-radius:11px;
+padding:14px 10px;text-align:center;height:100%;">
+  <div style="font-size:.7rem;color:rgba(255,255,255,.42);margin-bottom:7px;
+  line-height:1.3;">{label}</div>
+  <div style="color:{tc};font-weight:800;font-size:1.15rem;">
+    {prefix}£{abs(val):.2f}
+  </div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.3);margin-top:5px;
+  line-height:1.4;">{sub}</div>
+</div>""", unsafe_allow_html=True)
+
+            _mt_risk_tip = ("🟢 Safe — professional risk level." if mt_risk_pct <= 2
+                            else "🟡 Moderate — stay consistent, don't revenge trade." if mt_risk_pct <= 4
+                            else "🔴 High risk — reduce if you're on a losing streak.")
+            st.markdown(f"""
+<div style="background:rgba(255,255,255,.03);border-radius:9px;padding:10px 14px;
+margin-top:12px;font-size:.75rem;color:rgba(255,255,255,.4);display:flex;
+flex-wrap:wrap;gap:14px;">
+  <span>{_mt_risk_tip}</span>
+  <span>💡 <b style="color:rgba(255,255,255,.6);">Lot size rule:</b> size each order so losing it = £{mt_per_order:.2f} (your SL = {sl_p} pips).</span>
+  <span>📐 <b style="color:rgba(255,255,255,.6);">Break-even move:</b> after TP1 hits, drag remaining orders' SL → {entry:.5f}.</span>
+</div>""", unsafe_allow_html=True)
+
         # ── TradingView ─────────────────────────────────────────────────────
         with pt_tv:
             if df is not None:
@@ -2289,6 +2392,111 @@ border-radius:14px;padding:18px 22px;margin:0 0 18px;">
                 f"When TP1 fills → immediately edit orders 2 &amp; 3: change their <b>Stop to <span class='pt pt-e'>{entry:.5f}</span></b> (break-even) to lock in zero-loss.",
             ]
             st.markdown(make_steps(steps,"snum-ig"), unsafe_allow_html=True)
+
+            # ── IG Position Sizing & P&L Calculator ───────────────────────
+            st.markdown("""
+<div style='border-top:1px solid rgba(91,155,213,.18);margin:24px 0 16px;'></div>
+<div style='margin-bottom:4px;'>
+  <div style='color:#5b9bd5;font-weight:800;font-size:.95rem;letter-spacing:.05em;'>
+    💰 POSITION SIZING &amp; P&amp;L CALCULATOR
+  </div>
+  <div style='font-size:.78rem;color:rgba(255,255,255,.38);margin-top:3px;'>
+    Enter your balance and risk appetite — see exactly how much you make or lose at each target
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            _ig_calc_sl = max(sl_p, 1)
+            _rr1 = tp_p   / _ig_calc_sl
+            _rr2 = _tp2_p / _ig_calc_sl
+            _rr3 = _tp3_p / _ig_calc_sl
+
+            igc1, igc2 = st.columns([3, 2])
+            with igc1:
+                ig_balance = st.number_input(
+                    "💼 My Account Balance (£)", min_value=10.0, max_value=1_000_000.0,
+                    value=1000.0, step=100.0, key="ig_balance",
+                    help="Your total IG account balance in £")
+            with igc2:
+                ig_risk_pct = st.slider(
+                    "🎯 Risk per trade (%)", min_value=0.5, max_value=10.0,
+                    value=2.0, step=0.5, key="ig_risk_pct",
+                    help="Pro traders risk 1–2% max. 5%+ is high risk.")
+
+            ig_risk_amt  = ig_balance * ig_risk_pct / 100
+            ig_per_order = ig_risk_amt / 3
+            ig_p1        = ig_per_order * _rr1
+            ig_p2        = ig_per_order * _rr2
+            ig_p3        = ig_per_order * _rr3
+            ig_net_tp1   = ig_p1                       # TP1 hit → orders 2&3 break-even
+            ig_net_tp12  = ig_p1 + ig_p2               # TP1+TP2 → order 3 break-even
+            ig_net_all   = ig_p1 + ig_p2 + ig_p3       # all 3 TPs hit
+            ig_pct       = lambda v: v / max(ig_balance, 1) * 100
+
+            # Risk badge row
+            st.markdown(f"""
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px;">
+  <div style="background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.3);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">MAX RISK</div>
+    <div style="color:#ef5350;font-weight:800;font-size:1.1rem;">−£{ig_risk_amt:.2f}</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">{ig_risk_pct:.1f}% of balance</div>
+  </div>
+  <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">PER ORDER (÷3)</div>
+    <div style="color:#ffd60a;font-weight:800;font-size:1.1rem;">£{ig_per_order:.2f}</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">risk on each TP order</div>
+  </div>
+  <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">ENTRY LEVEL</div>
+    <div style="color:#fff;font-weight:800;font-size:1.0rem;">{entry:.5f}</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">{guide_pair} · {act}</div>
+  </div>
+  <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);
+  border-radius:9px;padding:8px 16px;flex:1;min-width:120px;text-align:center;">
+    <div style="color:rgba(255,255,255,.4);font-size:.68rem;margin-bottom:3px;">R:R RATIO</div>
+    <div style="color:#{'26a69a' if rr >= 1.5 else 'ffd60a' if rr >= 1.0 else 'ef5350'};font-weight:800;font-size:1.1rem;">{rr:.1f} : 1</div>
+    <div style="color:rgba(255,255,255,.28);font-size:.68rem;">{'Good ✅' if rr >= 1.5 else 'Acceptable ⚠️' if rr >= 1.0 else 'Poor ❌'}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # Scenario cards
+            st.markdown("<div style='font-size:.75rem;color:rgba(255,255,255,.35);margin-bottom:8px;'>📊 P&L SCENARIOS — what happens at each outcome:</div>", unsafe_allow_html=True)
+            igs1, igs2, igs3, igs4 = st.columns(4)
+            _sc = [
+                (igs1, "❌  SL Hit",          -ig_risk_amt, f"−{ig_risk_pct:.1f}% of balance",         "#ef5350", "rgba(239,83,80,.08)",  "rgba(239,83,80,.25)"),
+                (igs2, "✅  TP1 → Break-Even",  ig_net_tp1,  f"+{ig_pct(ig_net_tp1):.2f}% · orders 2&3 → BE", "#26a69a", "rgba(38,166,154,.08)", "rgba(38,166,154,.25)"),
+                (igs3, "✅✅  TP1 + TP2",        ig_net_tp12, f"+{ig_pct(ig_net_tp12):.2f}% · order 3 → BE",   "#26a69a", "rgba(38,166,154,.08)", "rgba(38,166,154,.25)"),
+                (igs4, "🏆  All 3 TPs Hit",     ig_net_all,  f"+{ig_pct(ig_net_all):.2f}% on balance",         "#ffd60a", "rgba(255,214,0,.07)",  "rgba(255,214,0,.22)"),
+            ]
+            for col, label, val, sub, tc, bg, bdr in _sc:
+                with col:
+                    prefix = "−" if val < 0 else "+"
+                    st.markdown(f"""
+<div style="background:{bg};border:1px solid {bdr};border-radius:11px;
+padding:14px 10px;text-align:center;height:100%;">
+  <div style="font-size:.7rem;color:rgba(255,255,255,.42);margin-bottom:7px;
+  line-height:1.3;">{label}</div>
+  <div style="color:{tc};font-weight:800;font-size:1.15rem;">
+    {prefix}£{abs(val):.2f}
+  </div>
+  <div style="font-size:.65rem;color:rgba(255,255,255,.3);margin-top:5px;
+  line-height:1.4;">{sub}</div>
+</div>""", unsafe_allow_html=True)
+
+            # Tips strip
+            _risk_tip = ("🟢 Safe — professional risk level." if ig_risk_pct <= 2
+                         else "🟡 Moderate — stay consistent, don't revenge trade." if ig_risk_pct <= 4
+                         else "🔴 High risk — reduce if you're on a losing streak.")
+            st.markdown(f"""
+<div style="background:rgba(255,255,255,.03);border-radius:9px;padding:10px 14px;
+margin-top:12px;font-size:.75rem;color:rgba(255,255,255,.4);display:flex;
+flex-wrap:wrap;gap:14px;">
+  <span>{_risk_tip}</span>
+  <span>💡 <b style="color:rgba(255,255,255,.6);">Rule of thumb:</b> size each IG order so losing it = £{ig_per_order:.2f}.</span>
+  <span>📐 <b style="color:rgba(255,255,255,.6);">Break-even move:</b> after TP1 hits, set remaining orders' Stop → {entry:.5f}.</span>
+</div>""", unsafe_allow_html=True)
 
         # ── P&L CALCULATOR ───────────────────────────────────────────────────
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
