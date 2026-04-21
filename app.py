@@ -769,12 +769,13 @@ def score_technicals(df, sym):
     bup   = sma20+2*std20; bdn = sma20-2*std20
     price = float(c.iloc[-1])
     bup_v = float(bup.iloc[-1]); bdn_v = float(bdn.iloc[-1])
-    bw    = (bup_v - bdn_v) / float(sma20.iloc[-1])   # band width
+    _sma20_v = float(sma20.iloc[-1]) or 1e-9
+    bw    = (bup_v - bdn_v) / _sma20_v   # band width
     if   bdn_v>0 and price<=bdn_v:  raw+=2; reasons.append("Price at lower Bollinger Band")
     elif bup_v>0 and price>=bup_v:  raw-=2; reasons.append("Price at upper Bollinger Band")
     # squeeze then break — higher confidence
-    if bw < 0.01 and price>float(sma20.iloc[-1]): raw+=1
-    elif bw < 0.01 and price<float(sma20.iloc[-1]): raw-=1
+    if bw < 0.01 and price>_sma20_v: raw+=1
+    elif bw < 0.01 and price<_sma20_v: raw-=1
 
     # ── 4. EMA stack ──────────────────────────────────────────────────────────
     e20  = float(c.ewm(span=20, adjust=False).mean().iloc[-1])
@@ -885,7 +886,8 @@ def score_technicals(df, sym):
 
     # ── ATR-based TP/SL (then refined by swing levels) ────────────────────────
     tr   = pd.concat([(h-lo),(h-c.shift()).abs(),(lo-c.shift()).abs()],axis=1).max(axis=1)
-    atr  = float(tr.rolling(14).mean().iloc[-1])
+    _atr_raw = tr.rolling(14).mean().iloc[-1]
+    atr  = float(_atr_raw) if not (pd.isna(_atr_raw) or _atr_raw <= 0) else float(price * 0.0005)
     ps   = pip_size(sym)
 
     if   score >= 4:  action = "BUY"
@@ -1850,7 +1852,10 @@ font-size:.82rem;color:#26a69a;font-weight:700;">
                 shown += 1
                 if shown >= 10: break
 
-    scanner()
+    try:
+        scanner()
+    except Exception as _scan_err:
+        st.error(f"⚠️ Scanner hit a temporary error — click **⟳ Scan** to retry. ({type(_scan_err).__name__}: {_scan_err})")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TAB 2 — MARKET INTELLIGENCE
@@ -2028,10 +2033,10 @@ with T3:
             _tp3    = round(entry + _dir * 3 * _dist, 5)
             _tp2_p  = max(1, round(abs(_tp2 - entry) / _pip_s)) if _pip_s > 0 else tp_p * 2
             _tp3_p  = max(1, round(abs(_tp3 - entry) / _pip_s)) if _pip_s > 0 else tp_p * 3
-            _ot     = f"{'BUY' if act == 'BUY' else 'SELL'} LIMIT"
-            _ot_col = "#26a69a" if act == "BUY" else "#ef5350"
-            _sl_dir = "below" if act == "BUY" else "above"
-            _tp_dir = "above" if act == "BUY" else "below"
+            _ot     = ("BUY LIMIT" if act == "BUY" else "SELL LIMIT" if act == "SELL" else "NO SIGNAL — WAIT")
+            _ot_col = "#26a69a" if act == "BUY" else ("#ef5350" if act == "SELL" else "#ffd60a")
+            _sl_dir = "below" if act != "SELL" else "above"
+            _tp_dir = "above" if act != "SELL" else "below"
 
             st.markdown('<div class="ph ph-mt">📊 MetaTrader 4 / 5 — Exact Trade Setup</div>', unsafe_allow_html=True)
 
@@ -2313,10 +2318,10 @@ flex-wrap:wrap;gap:14px;">
                                 config={"displayModeBar":True,"scrollZoom":True})
 
             # ── reuse multi-TP values already computed in pt_mt block ───────
-            _ig_ot_col = "#26a69a" if act == "BUY" else "#ef5350"
-            _ig_ot     = f"{'BUY' if act == 'BUY' else 'SELL'} LIMIT ORDER"
-            _ig_dir    = "above" if act == "BUY" else "below"
-            _ig_sl_dir = "below" if act == "BUY" else "above"
+            _ig_ot_col = "#26a69a" if act == "BUY" else ("#ef5350" if act == "SELL" else "#ffd60a")
+            _ig_ot     = ("BUY LIMIT ORDER" if act == "BUY" else "SELL LIMIT ORDER" if act == "SELL" else "NO SIGNAL — WAIT")
+            _ig_dir    = "above" if act != "SELL" else "below"
+            _ig_sl_dir = "below" if act != "SELL" else "above"
 
             st.markdown('<div class="ph ph-ig">🔵 IG Broker — Exact Trade Setup</div>', unsafe_allow_html=True)
 
@@ -3114,10 +3119,16 @@ border-radius:14px;padding:20px 22px;margin-bottom:8px;">
         # ── process deletes ─────────────────────────────────────────────────
         if to_delete:
             for _sid in to_delete:
-                del st.session_state["active_signals"][_sid]
+                st.session_state["active_signals"].pop(_sid, None)
             st.rerun()
 
-    signals_in_use()
+    try:
+        signals_in_use()
+    except Exception as _e:
+        st.error(f"⚠️ Signals tracker hit a temporary error — refreshing. ({type(_e).__name__})")
+        st.session_state["active_signals"] = {
+            k: v for k, v in st.session_state.get("active_signals", {}).items()
+        }
 
 # ── footer ────────────────────────────────────────────────────────────────────
 st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
