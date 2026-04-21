@@ -2133,14 +2133,160 @@ border-radius:14px;padding:18px 22px;margin:0 0 18px;">
                                              font=dict(color="#5b9bd5",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="ig_chart",
                                 config={"displayModeBar":True,"scrollZoom":True})
-            st.markdown('<div class="ph ph-ig">🔵 IG Broker — Step by step</div>', unsafe_allow_html=True)
+
+            # ── reuse multi-TP values already computed in pt_mt block ───────
+            _ig_ot_col = "#26a69a" if act == "BUY" else "#ef5350"
+            _ig_ot     = f"{'BUY' if act == 'BUY' else 'SELL'} LIMIT ORDER"
+            _ig_dir    = "above" if act == "BUY" else "below"
+            _ig_sl_dir = "below" if act == "BUY" else "above"
+
+            st.markdown('<div class="ph ph-ig">🔵 IG Broker — Exact Trade Setup</div>', unsafe_allow_html=True)
+
+            # ── Signal breakdown card ─────────────────────────────────────
+            st.markdown(f"""
+<div style="background:rgba(91,155,213,.08);border:1px solid rgba(91,155,213,.28);
+border-radius:14px;padding:18px 22px;margin:12px 0 16px;">
+  <div style="color:#5b9bd5;font-weight:800;font-size:.95rem;margin-bottom:14px;
+  letter-spacing:.06em;">📡 SIGNAL BREAKDOWN — TYPE THIS INTO IG</div>
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:7px 20px;align-items:center;">
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">PAIR</div>
+    <div style="color:#fff;font-weight:800;font-size:.95rem;">{guide_pair}</div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">ORDER TYPE</div>
+    <div style="color:{_ig_ot_col};font-weight:800;font-size:.95rem;">{_ig_ot}</div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">ENTRY LEVEL</div>
+    <div style="color:#ffd60a;font-weight:800;font-size:.95rem;">{entry:.5f}</div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">STOP LOSS</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#ef5350;">{sl:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({sl_p} pips {_ig_sl_dir} · max loss −£{loss_v:.2f})</span>
+    </div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">TAKE PROFIT 1</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#26a69a;">{tp:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({tp_p} pips {_ig_dir} · +£{profit:.2f} at TP1)</span>
+    </div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">TAKE PROFIT 2</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#26a69a;">{_tp2:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({_tp2_p} pips {_ig_dir} · 2nd target)</span>
+    </div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">TAKE PROFIT 3</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#26a69a;">{_tp3:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({_tp3_p} pips {_ig_dir} · 3rd target)</span>
+    </div>
+  </div>
+  <div style="margin-top:14px;padding-top:11px;border-top:1px solid rgba(255,255,255,.07);
+  font-size:.76rem;color:rgba(255,255,255,.3);">
+    ⚠️ Risk only what you can afford to lose — recommended 1–2% of account balance per trade.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # ── IG Deal Ticket field-by-field ─────────────────────────────
+            st.markdown(f"""
+<div style="background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.09);
+border-radius:14px;padding:18px 22px;margin:0 0 16px;">
+  <div style="color:#fff;font-weight:800;font-size:.9rem;margin-bottom:14px;">
+    🖥️ IG WORKING ORDER TICKET — FIELD BY FIELD
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);width:38%;vertical-align:top;">Market</td>
+      <td style="padding:8px 0;color:#fff;font-weight:700;">{guide_pair}
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(search the top bar on web.ig.com)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Order Type</td>
+      <td style="padding:8px 0;font-weight:700;">
+        <span style="color:{_ig_ot_col};">{'Buy' if act == 'BUY' else 'Sell'} Limit</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(Working Orders → Limit)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Order Level</td>
+      <td style="padding:8px 0;">
+        <span style="color:#ffd60a;font-weight:700;">{entry:.5f}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(price IG will fill your order at)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Stop</td>
+      <td style="padding:8px 0;">
+        <span style="color:#ef5350;font-weight:700;">{sl:.5f}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">({sl_p} pips {_ig_sl_dir} · max loss −£{loss_v:.2f})</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Limit (TP)</td>
+      <td style="padding:8px 0;">
+        <span style="color:#26a69a;font-weight:700;">{tp:.5f}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">({tp_p} pips · +£{profit:.2f} profit at TP1)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Size</td>
+      <td style="padding:8px 0;color:#fff;font-weight:700;">⅓ of your normal size
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(repeat 3× for TP1, TP2, TP3)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Good Till</td>
+      <td style="padding:8px 0;color:rgba(255,255,255,.55);">GTC (Good Till Cancelled)
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(order stays open until filled or you cancel)</span></td>
+    </tr>
+    <tr>
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Guaranteed Stop?</td>
+      <td style="padding:8px 0;color:rgba(255,255,255,.55);">Optional — costs a small premium but guarantees exact SL fill even through gaps</td>
+    </tr>
+  </table>
+</div>""", unsafe_allow_html=True)
+
+            # ── IG 3-Target strategy card ─────────────────────────────────
+            st.markdown(f"""
+<div style="background:rgba(91,155,213,.07);border:1px solid rgba(91,155,213,.25);
+border-radius:14px;padding:18px 22px;margin:0 0 18px;">
+  <div style="color:#5b9bd5;font-weight:800;font-size:.9rem;margin-bottom:10px;">
+    🎯 3-TARGET STRATEGY — PLACE 3 SEPARATE WORKING ORDERS
+  </div>
+  <div style="font-size:.78rem;color:rgba(255,255,255,.42);margin-bottom:14px;">
+    IG allows one Limit per order. Place 3 Working Orders with the same Level &amp; Stop,
+    but a different Limit and smaller size each time:
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:13px;text-align:center;">
+      <div style="color:#5b9bd5;font-weight:800;font-size:.9rem;">ORDER 1</div>
+      <div style="color:rgba(255,255,255,.38);font-size:.7rem;margin:4px 0 2px;">TP1 · {tp_p} pips</div>
+      <div style="color:#ffd60a;font-weight:700;font-size:.85rem;">{tp:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:3px;">+£{profit:.2f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:3px;">⅓ of size</div>
+    </div>
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:13px;text-align:center;">
+      <div style="color:#5b9bd5;font-weight:800;font-size:.9rem;">ORDER 2</div>
+      <div style="color:rgba(255,255,255,.38);font-size:.7rem;margin:4px 0 2px;">TP2 · {_tp2_p} pips</div>
+      <div style="color:#ffd60a;font-weight:700;font-size:.85rem;">{_tp2:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:3px;">+£{profit*2:.2f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:3px;">⅓ of size</div>
+    </div>
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:13px;text-align:center;">
+      <div style="color:#5b9bd5;font-weight:800;font-size:.9rem;">ORDER 3</div>
+      <div style="color:rgba(255,255,255,.38);font-size:.7rem;margin:4px 0 2px;">TP3 · {_tp3_p} pips</div>
+      <div style="color:#ffd60a;font-weight:700;font-size:.85rem;">{_tp3:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:3px;">+£{profit*3:.2f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:3px;">⅓ of size</div>
+    </div>
+  </div>
+  <div style="font-size:.74rem;color:rgba(255,255,255,.28);border-top:1px solid rgba(255,255,255,.06);padding-top:10px;">
+    💡 Same Order Level (<b style="color:rgba(255,215,0,.6);">{entry:.5f}</b>) and Stop (<b style="color:rgba(239,83,80,.6);">{sl:.5f}</b>) on all 3 orders.
+    When TP1 fills → edit orders 2 &amp; 3 Stop to <b style="color:rgba(255,215,0,.6);">{entry:.5f}</b> (break-even) to guarantee no loss.
+  </div>
+</div>""", unsafe_allow_html=True)
+
             steps = [
-                f"Log into <b>web.ig.com</b> or the IG app. Search <b>{guide_pair}</b>.",
-                f"Click <b>{bsw}</b> to open the deal ticket.",
-                f"<b>Limit (TP)</b>: <span class='pt pt-tp'>{tp:.5f}</span> — locks in <b style='color:#30d158'>+£{profit:.2f}</b> when hit.",
-                f"<b>Stop (SL)</b>: <span class='pt pt-sl'>{sl:.5f}</span> — limits loss to <b style='color:#ff453a'>−£{loss_v:.2f}</b>.",
-                f"IG pip view: TP is <b>{tp_p} pips</b> away, SL is <b>{sl_p} pips</b> away — verify these match.",
-                f"Click <b>Place deal</b>. Position shows in <b>My IG → Positions</b> with lines on chart.",
+                f"Log into <b>web.ig.com</b> (or IG app) → search <b>{guide_pair}</b> in the top search bar.",
+                f"Click the chart → set timeframe to <b>{tf_int.upper()}</b> via the interval buttons.",
+                f"Click <b>Working Orders</b> tab (not 'Deal' — you want a pending limit order, not market).",
+                f"Click <b>Create Working Order</b> → Direction: <b style='color:{_ig_ot_col};'>{'Buy' if act == 'BUY' else 'Sell'} Limit</b>.",
+                f"<b>Order Level</b> field → type <b style='color:#ffd60a;'>{entry:.5f}</b> (IG will fill when price reaches this).",
+                f"<b>Stop</b> field → type <b style='color:#ef5350;'>{sl:.5f}</b> ({sl_p} pips {_ig_sl_dir} · limits loss to −£{loss_v:.2f}).",
+                f"<b>Limit</b> field → type <b style='color:#26a69a;'>{tp:.5f}</b> (TP1, {tp_p} pips). Set <b>Size</b> to ⅓ of normal → <b>Good Till: GTC</b> → <b>Place Order</b>.",
+                f"Repeat <b>Create Working Order</b> twice more — same Level + Stop, but Limit = <span class='pt pt-tp'>{_tp2:.5f}</span> (TP2) and <span class='pt pt-tp'>{_tp3:.5f}</span> (TP3).",
+                f"Go to <b>Working Orders</b> list → verify all <b>3 orders</b> for {guide_pair} appear with correct levels.",
+                f"When TP1 fills → immediately edit orders 2 &amp; 3: change their <b>Stop to <span class='pt pt-e'>{entry:.5f}</span></b> (break-even) to lock in zero-loss.",
             ]
             st.markdown(make_steps(steps,"snum-ig"), unsafe_allow_html=True)
 
