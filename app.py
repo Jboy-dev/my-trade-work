@@ -247,14 +247,36 @@ ECON_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 BULL_WORDS = {
     "rise","rises","rose","gain","gains","gained","rally","rallied","surge","surged",
     "jump","jumped","bull","bullish","strong","strengthen","high","higher","growth",
-    "beat","exceeded","boost","hawkish","hike","optimism","recovery","expansion",
+    "beat","exceeded","boost","hawkish","hike","rate hike","optimism","recovery","expansion",
     "above forecast","better than expected","robust","buying","demand","confidence",
+    "tightening","surplus","resilient","upbeat","record high","exceeds expectations",
+    "soft landing","gdp beats","job growth","employment rises","inflation easing",
+    "above consensus","strong data","rate increase","aggressive hike","overperform",
+    "outperform","upgrade","positive","breakout","momentum","record","acceleration",
+    "job creation","wage growth","manufacturing expansion","services expansion",
 }
 BEAR_WORDS = {
     "fall","falls","fell","drop","drops","dropped","decline","declined","plunge","plunged",
     "bear","bearish","weak","weaken","low","lower","recession","miss","missed",
     "disappoint","cut","dovish","slowdown","contraction","concern","uncertainty",
     "below forecast","worse than expected","selling","caution","fear","worry","crisis",
+    "rate cut","easing","quantitative easing","deficit","stagflation","tariff","tariffs",
+    "layoffs","unemployment rises","debt","default","banking crisis","bank run",
+    "below consensus","weak data","disappointing","downgrade","negative","breakdown",
+    "sanctions","geopolitical","tension","conflict","trade war","supply shock",
+    "inflation surge","energy crisis","recession risk","contraction","jobs lost",
+}
+
+# ── Pair correlation map — used to boost/reduce confidence ───────────────────
+PAIR_CORR = {
+    # Highly positive (move same direction)
+    ("EUR/USD","GBP/USD"):  0.82, ("EUR/USD","AUD/USD"):  0.72,
+    ("GBP/USD","AUD/USD"):  0.68, ("EUR/USD","NZD/USD"):  0.65,
+    ("EUR/JPY","GBP/JPY"):  0.88, ("EUR/JPY","USD/JPY"):  0.75,
+    ("GBP/JPY","USD/JPY"):  0.70,
+    # Highly negative (move opposite directions)
+    ("EUR/USD","USD/CHF"): -0.90, ("GBP/USD","USD/CHF"): -0.82,
+    ("EUR/USD","USD/CAD"): -0.60, ("GBP/USD","USD/JPY"): -0.45,
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -263,7 +285,8 @@ BEAR_WORDS = {
 for _k, _v in [("signals",{}),("last_scan",0),("trigger_scan",False),
                ("rev_hero",0),("rev_mt",0),("rev_tv",0),("rev_ig",0),("rev_pred",0),
                ("drag_hero","pan"),("drag_mt","pan"),("drag_tv","pan"),("drag_ig","pan"),("drag_pred","pan"),
-               ("voice_muted", False)]:
+               ("voice_muted", False),
+               ("signal_history",{}),("win_rates",{}),("ind_weights",{})]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -466,20 +489,245 @@ def calc_adx(df, period=14):
     v = float(adx.iloc[-1]) if not np.isnan(adx.iloc[-1]) else 18
     return max(0, min(100, v))
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  EXTRA INDICATORS  (added to bring engine to 15 indicators)
+# ══════════════════════════════════════════════════════════════════════════════
+def calc_williams_r(df, period=14):
+    """Williams %R  — momentum oscillator, mirrors RSI from the other side.
+    < -80 = oversold (bullish), > -20 = overbought (bearish)."""
+    h = df["High"].rolling(period).max()
+    l = df["Low"].rolling(period).min()
+    wr = -100 * (h - df["Close"]) / (h - l).replace(0, np.nan)
+    v  = float(wr.iloc[-1]) if not np.isnan(wr.iloc[-1]) else -50
+    return max(-100, min(0, v))
+
+def calc_cci(df, period=20):
+    """Commodity Channel Index — > +100 overbought, < -100 oversold."""
+    tp  = (df["High"] + df["Low"] + df["Close"]) / 3
+    ma  = tp.rolling(period).mean()
+    mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean())
+    cci = (tp - ma) / (0.015 * mad.replace(0, np.nan))
+    v   = float(cci.iloc[-1]) if not np.isnan(cci.iloc[-1]) else 0
+    return max(-300, min(300, v))
+
+def calc_parabolic_sar(df, step=0.02, max_step=0.2):
+    """Parabolic SAR — price above SAR = bullish, below = bearish.
+    Returns (is_bullish: bool, sar_value: float)."""
+    hi = df["High"].values; lo = df["Low"].values; cl = df["Close"].values
+    n  = len(cl)
+    if n < 10:
+        return True, float(lo[-1])
+    sar   = np.zeros(n);  sar[0] = hi[0]
+    ep    = lo[0];        af = step;  trend = 1
+    for i in range(1, n):
+        if trend == 1:
+            sar[i] = sar[i-1] + af * (ep - sar[i-1])
+            sar[i] = min(sar[i], lo[i-1], lo[max(0, i-2)])
+            if lo[i] < sar[i]:
+                trend = -1; sar[i] = ep; ep = lo[i]; af = step
+            else:
+                if hi[i] > ep: ep = hi[i]; af = min(af + step, max_step)
+        else:
+            sar[i] = sar[i-1] + af * (ep - sar[i-1])
+            sar[i] = max(sar[i], hi[i-1], hi[max(0, i-2)])
+            if hi[i] > sar[i]:
+                trend = 1; sar[i] = ep; ep = hi[i]; af = step
+            else:
+                if lo[i] < ep: ep = lo[i]; af = min(af + step, max_step)
+    return float(cl[-1]) > float(sar[-1]), float(sar[-1])
+
+def calc_ichimoku(df):
+    """Ichimoku Cloud — price vs cloud gives long-term trend bias.
+    Returns (score: -1/0/1, label: str)."""
+    if len(df) < 52:
+        return 0, ""
+    tenkan  = (df["High"].rolling(9).max()  + df["Low"].rolling(9).min())  / 2
+    kijun   = (df["High"].rolling(26).max() + df["Low"].rolling(26).min()) / 2
+    span_a  = ((tenkan + kijun) / 2).shift(26)
+    span_b  = ((df["High"].rolling(52).max() + df["Low"].rolling(52).min()) / 2).shift(26)
+    try:
+        price   = float(df["Close"].iloc[-1])
+        top     = max(float(span_a.iloc[-1]), float(span_b.iloc[-1]))
+        bot     = min(float(span_a.iloc[-1]), float(span_b.iloc[-1]))
+        if np.isnan(top) or np.isnan(bot): return 0, ""
+        if price > top:   return  1, f"Above Ichimoku cloud (bullish)"
+        elif price < bot: return -1, f"Below Ichimoku cloud (bearish)"
+        else:             return  0,  "Inside Ichimoku cloud (neutral)"
+    except Exception:
+        return 0, ""
+
+def calc_pivot_levels(df):
+    """Classic pivot point S/R — uses previous day's OHLC.
+    Returns dict with P, R1, R2, S1, S2."""
+    try:
+        prev_h = float(df["High"].iloc[-2])
+        prev_l = float(df["Low"].iloc[-2])
+        prev_c = float(df["Close"].iloc[-2])
+        P  = (prev_h + prev_l + prev_c) / 3
+        R1 = 2*P - prev_l;  R2 = P + (prev_h - prev_l)
+        S1 = 2*P - prev_h;  S2 = P - (prev_h - prev_l)
+        return {"P":P, "R1":R1, "R2":R2, "S1":S1, "S2":S2}
+    except Exception:
+        return {}
+
+def find_swing_levels(df, lookback=30):
+    """Detect recent swing highs and lows (local extrema over 2 bars each side).
+    Returns (swing_highs sorted desc, swing_lows sorted asc)."""
+    h = df["High"].values[-lookback:]
+    l = df["Low"].values[-lookback:]
+    sh, sl = [], []
+    for i in range(2, len(h)-2):
+        if h[i] > h[i-1] and h[i] > h[i-2] and h[i] > h[i+1] and h[i] > h[i+2]:
+            sh.append(h[i])
+        if l[i] < l[i-1] and l[i] < l[i-2] and l[i] < l[i+1] and l[i] < l[i+2]:
+            sl.append(l[i])
+    return sorted(set(sh), reverse=True)[:4], sorted(set(sl))[:4]
+
+def smart_tp_sl(df, sym, action, price, atr):
+    """Place TP at next swing high/low and SL just beyond the nearest swing.
+    Falls back to ATR multiples if no swings found."""
+    ps   = pip_size(sym)
+    s_hi, s_lo = find_swing_levels(df)
+    if action == "BUY":
+        # TP = nearest swing high above price
+        candidates_tp = [v for v in s_hi if v > price]
+        tp = candidates_tp[-1] if candidates_tp else price + atr * 1.6
+        # SL = nearest swing low below price (with tiny buffer)
+        candidates_sl = [v for v in s_lo if v < price]
+        sl = candidates_sl[0] * 0.9999 if candidates_sl else price - atr * 1.0
+    else:  # SELL
+        candidates_tp = [v for v in s_lo if v < price]
+        tp = candidates_tp[0] if candidates_tp else price - atr * 1.6
+        candidates_sl = [v for v in s_hi if v > price]
+        sl = candidates_sl[-1] * 1.0001 if candidates_sl else price + atr * 1.0
+    tp_p = max(10, min(120, round(abs(tp - price) / ps)))
+    sl_p = max(8,  min(70,  round(abs(sl - price) / ps)))
+    return tp, sl, tp_p, sl_p
+
+def detect_market_regime(df):
+    """Classify current market as UPTREND / DOWNTREND / RANGING / VOLATILE.
+    Returns (regime: str, description: str, strategy_mult: float)."""
+    adx   = calc_adx(df)
+    h10   = df["High"].iloc[-10:].values
+    l10   = df["Low"].iloc[-10:].values
+    hh    = sum(h10[i] > h10[i-1] for i in range(1, 10))
+    ll    = sum(l10[i] < l10[i-1] for i in range(1, 10))
+    # recent ATR vs average ATR
+    atr_r = float((df["High"].iloc[-5:] - df["Low"].iloc[-5:]).mean())
+    atr_a = float((df["High"] - df["Low"]).rolling(20).mean().iloc[-1])
+    vol_r = atr_r / max(atr_a, 1e-9)
+    if adx > 30:
+        if hh >= 6: return "UPTREND",   f"Strong uptrend · ADX {adx:.0f}",  1.35
+        if ll >= 6: return "DOWNTREND", f"Strong downtrend · ADX {adx:.0f}", 1.35
+        return         "TRENDING",  f"Trending · ADX {adx:.0f}",         1.20
+    elif adx > 20:
+        return         "MODERATE",  f"Moderate trend · ADX {adx:.0f}",   1.05
+    elif vol_r > 1.6:
+        return         "VOLATILE",  f"Choppy/volatile · ADX {adx:.0f}",  0.70
+    else:
+        return         "RANGING",   f"Ranging/sideways · ADX {adx:.0f}", 0.85
+
+def correlation_boost(pair, signals):
+    """Check correlated pairs' signals. Returns confidence delta (-8 to +8)."""
+    delta = 0
+    act   = (signals.get(pair) or {}).get("action", "WAIT")
+    if act == "WAIT":
+        return 0
+    for (p1, p2), corr in PAIR_CORR.items():
+        other = p2 if p1 == pair else (p1 if p2 == pair else None)
+        if other is None: continue
+        other_act = (signals.get(other) or {}).get("action", "WAIT")
+        if other_act == "WAIT": continue
+        # same direction + positive corr = boost; opposite + positive corr = penalise
+        same_dir = (other_act == act)
+        if abs(corr) >= 0.7:
+            if (same_dir and corr > 0) or (not same_dir and corr < 0):
+                delta += int(abs(corr) * 8)   # confirms signal
+            elif (same_dir and corr < 0) or (not same_dir and corr > 0):
+                delta -= int(abs(corr) * 6)   # contradicts signal
+    return max(-8, min(8, delta))
+
+def calendar_risk(pair, evs):
+    """Check if high-impact events are imminent for this pair's currencies.
+    Returns (risk_level: 'HIGH'/'MED'/'LOW', description: str)."""
+    base, quote = pair.split("/")
+    now = datetime.datetime.now(UK_TZ)
+    for ev in evs:
+        ccy    = ev.get("currency","")
+        impact = ev.get("impact","low")
+        if ccy not in (base, quote): continue
+        if impact not in ("high","medium"): continue
+        try:
+            mins_away = (ev["dt"] - now).total_seconds() / 60
+            if -5 <= mins_away <= 45:   # happening now or within 45 min
+                label = f"{ev['event'][:40]} ({ccy}) in {max(0,int(mins_away))}min"
+                if impact == "high":   return "HIGH", label
+                else:                  return "MED",  label
+        except Exception:
+            pass
+    return "LOW", ""
+
+def track_signal_outcome(pair, sig, current_price):
+    """Record whether a past signal hit TP, SL, or expired neutral."""
+    hist = st.session_state.setdefault("signal_history", {})
+    pair_hist = hist.setdefault(pair, [])
+    # Update any OPEN records
+    for rec in pair_hist:
+        if rec.get("outcome"): continue
+        if time.time() - rec["issued_at"] < rec["valid_secs"]: continue
+        act = rec["action"]
+        p   = current_price
+        if p is None: continue
+        if act == "BUY":
+            rec["outcome"] = "WIN" if p >= rec["tp"] else ("LOSS" if p <= rec["sl"] else "NEUTRAL")
+        else:
+            rec["outcome"] = "WIN" if p <= rec["tp"] else ("LOSS" if p >= rec["sl"] else "NEUTRAL")
+    # Keep last 30 records per pair
+    hist[pair] = pair_hist[-30:]
+
+def get_win_rate(pair):
+    """Returns (win_rate_pct: float, total_signals: int) for a pair."""
+    hist = st.session_state.get("signal_history", {}).get(pair, [])
+    resolved = [r for r in hist if r.get("outcome") in ("WIN","LOSS","NEUTRAL")]
+    if not resolved: return None, 0
+    wins = sum(1 for r in resolved if r["outcome"] == "WIN")
+    return round(wins / len(resolved) * 100, 1), len(resolved)
+
+def record_signal(pair, sig):
+    """Store new signal in history for outcome tracking."""
+    hist = st.session_state.setdefault("signal_history", {})
+    pair_hist = hist.setdefault(pair, [])
+    pair_hist.append({
+        "action":    sig["action"],
+        "entry":     sig["entry"],
+        "tp":        sig["tp"],
+        "sl":        sig["sl"],
+        "issued_at": sig["issued_at"],
+        "valid_secs":sig["valid_secs"],
+        "outcome":   None,
+    })
+    hist[pair] = pair_hist[-30:]
+
 def score_technicals(df, sym):
     """
-    9-indicator engine.  Returns a score in [-10, +10], action, reasons, etc.
+    15-indicator engine.  Returns a score in [-10, +10], action, reasons, etc.
 
     Indicators  (max raw contribution):
-      1. RSI-14              ±3
-      2. MACD crossover       ±3
-      3. Bollinger Bands      ±2
-      4. EMA stack 20/50/200  ±2
-      5. Stochastic K/D       ±2
-      6. Candlestick patterns ±3
-      7. Volume confirmation  ±1
-      8. ADX strength multiplier (1.0–1.35)
-      9. Price-action (HH/LL) ±1
+      1.  RSI-14                   ±3
+      2.  MACD crossover           ±3
+      3.  Bollinger Bands          ±2
+      4.  EMA stack 20/50/200      ±2
+      5.  Stochastic K/D           ±2
+      6.  Candlestick patterns     ±3
+      7.  Volume confirmation      ±1
+      8.  ADX strength multiplier  ×1.0–1.40
+      9.  Price-action HH/LL       ±1
+      10. Williams %R              ±2
+      11. CCI                      ±2
+      12. Parabolic SAR            ±2
+      13. Ichimoku Cloud           ±2
+      14. Pivot S/R proximity      ±1
+      15. Market regime multiplier ×0.70–1.35
     """
     c, h, lo = df["Close"], df["High"], df["Low"]
     raw, reasons = 0, []
@@ -586,44 +834,171 @@ def score_technicals(df, sym):
         elif all(last5_l[i]<=last5_l[i-1] for i in range(1,5)): raw-=1; reasons.append("5-candle LL streak")
     except Exception: pass
 
-    # ── normalise ─────────────────────────────────────────────────────────────
+    # ── 10. Williams %R ────────────────────────────────────────────────────────
+    wr = calc_williams_r(df)
+    if   wr < -85: raw+=2; reasons.append(f"Williams %R oversold ({wr:.0f})")
+    elif wr < -70: raw+=1
+    elif wr > -15: raw-=2; reasons.append(f"Williams %R overbought ({wr:.0f})")
+    elif wr > -30: raw-=1
+
+    # ── 11. CCI ────────────────────────────────────────────────────────────────
+    cci_v = calc_cci(df)
+    if   cci_v < -150: raw+=2; reasons.append(f"CCI oversold ({cci_v:.0f})")
+    elif cci_v < -100: raw+=1
+    elif cci_v > 150:  raw-=2; reasons.append(f"CCI overbought ({cci_v:.0f})")
+    elif cci_v > 100:  raw-=1
+
+    # ── 12. Parabolic SAR ──────────────────────────────────────────────────────
+    sar_bull, sar_val = calc_parabolic_sar(df)
+    if   sar_bull and raw > 0: raw+=2; reasons.append(f"Parabolic SAR bullish ({sar_val:.5f})")
+    elif sar_bull:             raw+=1
+    elif not sar_bull and raw < 0: raw-=2; reasons.append(f"Parabolic SAR bearish ({sar_val:.5f})")
+    else:                      raw-=1
+
+    # ── 13. Ichimoku Cloud ─────────────────────────────────────────────────────
+    ichi_score, ichi_lbl = calc_ichimoku(df)
+    if   ichi_score ==  1: raw+=2; reasons.append(ichi_lbl)
+    elif ichi_score == -1: raw-=2; reasons.append(ichi_lbl)
+
+    # ── 14. Pivot S/R proximity ────────────────────────────────────────────────
+    pivots = calc_pivot_levels(df)
+    if pivots:
+        ps_val = pip_size(sym)
+        near_support  = any(abs(price - pivots[k]) < 5 * ps_val for k in ("S1","S2","P"))
+        near_resist   = any(abs(price - pivots[k]) < 5 * ps_val for k in ("R1","R2","P"))
+        if near_support and raw > 0: raw+=1; reasons.append("Price near pivot support")
+        if near_resist  and raw < 0: raw-=1; reasons.append("Price near pivot resistance")
+
+    # ── normalise with ADX mult ────────────────────────────────────────────────
     raw_f = raw * mult
     score = int(max(-10, min(10, raw_f)))
 
-    # ── ATR-based dynamic TP/SL ───────────────────────────────────────────────
+    # ── 15. Market regime multiplier (applied after scoring) ──────────────────
+    regime, regime_lbl, regime_mult = detect_market_regime(df)
+    # In a strong trend, amplify signal in trend direction; in ranging, dampen
+    if regime in ("UPTREND","DOWNTREND","TRENDING","MODERATE") and score != 0:
+        score = int(max(-10, min(10, score * regime_mult)))
+    elif regime in ("RANGING","VOLATILE"):
+        score = int(score * regime_mult)   # dampen in choppy conditions
+    reasons.append(f"Market: {regime_lbl}")
+
+    # ── ATR-based TP/SL (then refined by swing levels) ────────────────────────
     tr   = pd.concat([(h-lo),(h-c.shift()).abs(),(lo-c.shift()).abs()],axis=1).max(axis=1)
     atr  = float(tr.rolling(14).mean().iloc[-1])
     ps   = pip_size(sym)
-    tp_p = max(15, min(90, round(atr/ps * 1.6)))
-    sl_p = max(10, min(55, round(atr/ps * 1.0)))
 
-    if   score>=4:  action="BUY";  tp=price+tp_p*ps; sl=price-sl_p*ps
-    elif score<=-4: action="SELL"; tp=price-tp_p*ps; sl=price+sl_p*ps
-    else:           action="WAIT"; tp=price+tp_p*ps; sl=price-sl_p*ps
+    if   score >= 4:  action = "BUY"
+    elif score <= -4: action = "SELL"
+    else:             action = "WAIT"
 
-    return action, score, price, tp, sl, tp_p, sl_p, rsi_v, reasons, adx_v
+    # Smart swing-based TP/SL (better than pure ATR)
+    tp, sl, tp_p, sl_p = smart_tp_sl(df, sym, action if action != "WAIT" else "BUY", price, atr)
+    if action == "WAIT":
+        # For WAIT signals, just show ATR-based levels
+        tp_p = max(15, min(90, round(atr/ps * 1.6)))
+        sl_p = max(10, min(55, round(atr/ps * 1.0)))
+        tp = price + tp_p * ps
+        sl = price - sl_p * ps
 
-def scan_one(pair, yf_sym, interval, period, valid_secs, tf_label, news_sent):
+    return action, score, price, tp, sl, tp_p, sl_p, rsi_v, reasons, adx_v, regime
+
+# MTF confirmation timeframes per primary interval
+_MTF_MAP = {
+    "1m":  [("5m","1d"),  ("15m","5d")],
+    "5m":  [("1m","1d"),  ("15m","5d")],
+    "15m": [("5m","5d"),  ("1h","30d")],
+    "1h":  [("15m","5d"), ("4h","60d")],
+}
+
+def scan_one(pair, yf_sym, interval, period, valid_secs, tf_label, news_sent,
+             evs=None):
+    """
+    Full AI scan for one pair:
+    1. Fetch primary TF data
+    2. Run 15-indicator engine
+    3. Multi-timeframe confirmation (2 extra TFs)
+    4. News sentiment layer
+    5. Economic calendar risk filter
+    6. Correlation (applied after all pairs scanned — done in scanner())
+    7. Confidence scoring: 15 indicators × agreement
+    """
     df = fetch_df(yf_sym, interval, period)
     if df is None:
         return pair, None
-    action, tech, entry, tp, sl, tp_p, sl_p, rsi_v, reasons, adx_v = \
+
+    action, tech, entry, tp, sl, tp_p, sl_p, rsi_v, reasons, adx_v, regime = \
         score_technicals(df, pair)
-    ns  = news_sent.get(pair, 0)
-    # news adds max ±2 to final score
-    combined = max(-10, min(10, tech + round(ns * 0.4)))
-    if   combined>=4:  final="BUY"
-    elif combined<=-4: final="SELL"
-    else:              final="WAIT"
-    # confidence: how many indicators agree? scale to 40–97%
-    conf = min(97, max(40, int(abs(combined)/10*57 + 40)))
-    return pair, {
-        "action":final,"tech":tech,"news_score":ns,"combined":combined,
-        "confidence":conf,"entry":entry,"tp":tp,"sl":sl,
-        "tp_pips":tp_p,"sl_pips":sl_p,"rsi":rsi_v,"adx":adx_v,
-        "reasons":reasons,"issued_at":time.time(),
-        "valid_secs":valid_secs,"tf_label":tf_label,"df":df,
+
+    # ── Multi-timeframe confirmation ──────────────────────────────────────────
+    mtf_agrees = 0; mtf_total = 0; mtf_notes = []
+    for (ctf, cper) in _MTF_MAP.get(interval, []):
+        try:
+            df_c = fetch_df(yf_sym, ctf, cper)
+            if df_c is not None and len(df_c) >= 40:
+                act_c, sc_c, *_ = score_technicals(df_c, pair)
+                mtf_total += 1
+                if act_c == action: mtf_agrees += 1; mtf_notes.append(f"{ctf}✓")
+                elif act_c == "WAIT": mtf_notes.append(f"{ctf}~")
+                else: mtf_notes.append(f"{ctf}✗")
+        except Exception:
+            pass
+
+    # MTF bonus/penalty on tech score
+    if mtf_total > 0:
+        mtf_ratio = mtf_agrees / mtf_total
+        if mtf_ratio == 1.0:
+            tech = min(10, tech + 2)
+            reasons.append(f"All timeframes agree ({','.join(mtf_notes)})")
+        elif mtf_ratio >= 0.5:
+            tech = min(10, tech + 1)
+            reasons.append(f"Timeframes mostly agree ({','.join(mtf_notes)})")
+        else:
+            tech = max(-10, tech - 1)
+            reasons.append(f"Timeframe conflict ({','.join(mtf_notes)})")
+
+    # ── News sentiment layer ───────────────────────────────────────────────────
+    ns       = news_sent.get(pair, 0)
+    combined = max(-10, min(10, tech + round(ns * 0.5)))
+
+    if   combined >= 4:  final = "BUY"
+    elif combined <= -4: final = "SELL"
+    else:                final = "WAIT"
+
+    # ── Economic calendar risk filter ─────────────────────────────────────────
+    risk_level, risk_event = calendar_risk(pair, evs or [])
+    if risk_level == "HIGH":
+        combined = int(combined * 0.60)   # major dampening before red news
+        reasons.append(f"⚠ High-impact news imminent: {risk_event}")
+        if abs(combined) < 4: final = "WAIT"
+    elif risk_level == "MED":
+        combined = int(combined * 0.80)
+        reasons.append(f"⚡ Medium-impact news: {risk_event}")
+
+    # ── Confidence: base + MTF + news agreement ───────────────────────────────
+    base_conf  = min(95, max(38, int(abs(combined) / 10 * 57 + 38)))
+    mtf_bonus  = int(mtf_agrees / max(mtf_total, 1) * 8)
+    news_bonus = 4 if ((ns > 0.5 and final == "BUY") or (ns < -0.5 and final == "SELL")) else 0
+    risk_pen   = -12 if risk_level == "HIGH" else (-5 if risk_level == "MED" else 0)
+    conf       = min(97, max(35, base_conf + mtf_bonus + news_bonus + risk_pen))
+
+    # track historic outcome
+    current_p, _ = live_price(yf_sym)
+    if current_p:
+        track_signal_outcome(pair, {}, current_p)   # update old records
+
+    sig = {
+        "action": final, "tech": tech, "news_score": ns, "combined": combined,
+        "confidence": conf, "entry": entry, "tp": tp, "sl": sl,
+        "tp_pips": tp_p, "sl_pips": sl_p, "rsi": rsi_v, "adx": adx_v,
+        "regime": regime,
+        "mtf_agrees": mtf_agrees, "mtf_total": mtf_total, "mtf_notes": mtf_notes,
+        "risk_level": risk_level, "risk_event": risk_event,
+        "reasons": reasons, "issued_at": time.time(),
+        "valid_secs": valid_secs, "tf_label": tf_label, "df": df,
     }
+    if final != "WAIT":
+        record_signal(pair, sig)
+    return pair, sig
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CHART BUILDER — interactive Plotly, platform themes
@@ -1181,14 +1556,24 @@ with T1:
                     "⟳ Scanning…</div>",
                     unsafe_allow_html=True)
                 news   = fetch_news()
+                evs    = fetch_calendar()
                 pair_s = build_pair_sentiment(news)
                 new_sigs = {}
                 with ThreadPoolExecutor(max_workers=10) as ex:
-                    futs = {ex.submit(scan_one,p,y,tf_int,tf_per,tf_val,tf_label,pair_s):p
+                    futs = {ex.submit(scan_one,p,y,tf_int,tf_per,tf_val,tf_label,pair_s,evs):p
                             for p,y in PAIRS.items()}
                     for f in as_completed(futs):
                         p, s = f.result()
                         new_sigs[p] = s
+                # ── Correlation boost pass (needs all signals first) ──────────
+                for p, s in new_sigs.items():
+                    if s and s["action"] != "WAIT":
+                        delta = correlation_boost(p, new_sigs)
+                        s["confidence"] = min(97, max(35, s["confidence"] + delta))
+                        if delta > 0:
+                            s["reasons"].append(f"Correlated pairs confirm (+{delta}% conf)")
+                        elif delta < 0:
+                            s["reasons"].append(f"Correlated pairs conflict ({delta}% conf)")
                 st.session_state["signals"] = new_sigs
                 st.session_state["last_scan"] = now
 
@@ -1224,7 +1609,14 @@ with T1:
             ns_lbl = ("📰 News confirms" if (best["news_score"]>0 and act=="BUY")
                       or (best["news_score"]<0 and act=="SELL")
                       else "📰 News neutral")
-            adx_lbl= f"ADX {best['adx']:.0f}" + (" (strong trend)" if best["adx"]>25 else "")
+            adx_lbl  = f"ADX {best['adx']:.0f}" + (" (strong trend)" if best["adx"]>25 else "")
+            regime   = best.get("regime","")
+            mtf_a    = best.get("mtf_agrees",0); mtf_t = best.get("mtf_total",0)
+            mtf_lbl  = (f"✅ {mtf_a}/{mtf_t} TF agree" if mtf_t>0 else "")
+            rl       = best.get("risk_level","LOW")
+            risk_lbl = (f"⚠ NEWS RISK" if rl=="HIGH" else ("⚡ News caution" if rl=="MED" else ""))
+            wr, wn   = get_win_rate(best_pair)
+            wr_lbl   = (f"📊 {wr:.0f}% win rate ({wn} signals)" if wr is not None else "")
             hcls   = "hero-buy" if act=="BUY" else "hero-sell"
             acls   = "action-buy" if act=="BUY" else "action-sell"
             bcls   = "conf-buy"  if act=="BUY" else "conf-sell"
@@ -1235,7 +1627,13 @@ with T1:
   <div class="hero-eyebrow">◉ STRONGEST SIGNAL RIGHT NOW</div>
   <div class="hero-action {acls}">{act}</div>
   <div class="hero-pair">{best_pair}</div>
-  <div class="hero-why">{why}<br>{ns_lbl} · {adx_lbl} · {'⏰ Signal expired — rescanning' if exp else f'⏱ {cd} remaining'}</div>
+  <div class="hero-why">{why}<br>
+    {ns_lbl} · {adx_lbl} · {regime}
+    {f'<br>{mtf_lbl}' if mtf_lbl else ''}
+    {f'<br><span style="color:#ff453a;font-weight:700">{risk_lbl}</span>' if risk_lbl else ''}
+    {f'<br>{wr_lbl}' if wr_lbl else ''}
+    <br>{'⏰ Signal expired — rescanning' if exp else f'⏱ {cd} remaining'}
+  </div>
   <div class="hero-stats">
     <div class="hstat"><div class="hstat-val" style="font-family:monospace">{entry:.5f}</div><div class="hstat-lbl">Entry Price</div></div>
     <div class="hstat"><div class="hstat-val" style="color:#30d158;font-family:monospace">{tp:.5f}</div><div class="hstat-lbl">Take Profit +{best['tp_pips']}p</div></div>
@@ -1303,11 +1701,22 @@ with T1:
                     cc    = {"BUY":"scard-buy","SELL":"scard-sell"}.get(act,"scard-wait") + (" scard-dead" if exp else "")
                     ac    = {"BUY":"sact-buy","SELL":"sact-sell"}.get(act,"sact-wait")
                     bc    = {"BUY":"sbar-buy","SELL":"sbar-sell"}.get(act,"sbar-wait")
-                    ni    = ('<span class="pill pill-bull">📰 Bullish news</span>' if ns>0.5
-                             else '<span class="pill pill-bear">📰 Bearish news</span>' if ns<-0.5
-                             else '<span class="pill pill-neu">📰 Neutral</span>')
-                    cd_txt = "Rescanning…" if exp else cd
+                    ni      = ('<span class="pill pill-bull">📰 Bullish news</span>' if ns>0.5
+                               else '<span class="pill pill-bear">📰 Bearish news</span>' if ns<-0.5
+                               else '<span class="pill pill-neu">📰 Neutral</span>')
+                    cd_txt  = "Rescanning…" if exp else cd
                     adx_lbl = f"ADX {sig['adx']:.0f}" + ("▲" if sig["adx"]>25 else "")
+                    reg_lbl = sig.get("regime","")
+                    mtf_a2  = sig.get("mtf_agrees",0); mtf_t2 = sig.get("mtf_total",0)
+                    mtf_pill= (f'<span class="pill pill-bull">✅ {mtf_a2}/{mtf_t2} TF</span>' if mtf_t2>0 and mtf_a2==mtf_t2
+                               else f'<span class="pill pill-neu">⟳ {mtf_a2}/{mtf_t2} TF</span>' if mtf_t2>0
+                               else "")
+                    rl2     = sig.get("risk_level","LOW")
+                    risk_pill = ('<span class="pill pill-bear">⚠ News risk</span>' if rl2=="HIGH"
+                                 else '<span class="pill pill-neu">⚡ News caution</span>' if rl2=="MED" else "")
+                    swr, swn = get_win_rate(pair)
+                    wr_pill  = (f'<span class="pill pill-bull">📊 {swr:.0f}% WR</span>' if swr is not None and swr>=55
+                                else f'<span class="pill pill-neu">📊 {swr:.0f}% WR</span>' if swr is not None else "")
 
                     st.markdown(f"""
 <div class="scard {cc}">
@@ -1331,13 +1740,40 @@ with T1:
     <span>💰 <b style="color:#30d158">+£{win:.2f}</b></span>
     <span>🛡 <b style="color:#ff453a">−£{lose:.2f}</b></span>
     <span style="color:rgba(255,255,255,.35)">RSI {sig['rsi']:.0f}</span>
-    {ni}
+    {ni}{mtf_pill}{risk_pill}{wr_pill}
   </div>
+  <div style="font-size:.67rem;color:rgba(255,255,255,.22);margin-top:5px;">{reg_lbl}</div>
 </div>""", unsafe_allow_html=True)
 
                     if act in ("BUY","SELL") and not exp:
                         speak(f"{pair}_{sig['issued_at']:.0f}",
                               f"{pair.replace('/','')} {act}.")
+
+        # ── AI Intelligence Summary ───────────────────────────────────────────
+        any_hist = any(
+            len(st.session_state.get("signal_history",{}).get(p,[])) > 0
+            for p in PAIRS)
+        if any_hist:
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+            st.markdown("""
+<div style='border-top:1px solid rgba(255,255,255,.06);margin:8px 0 14px;'></div>
+<div class='eyebrow' style='margin-bottom:10px;'>🧠 AI SELF-LEARNING — SIGNAL TRACK RECORD</div>""",
+                unsafe_allow_html=True)
+            wr_cols = st.columns(5)
+            shown   = 0
+            for pi, (pair, _) in enumerate(sorted(PAIRS.items())):
+                wr, wn = get_win_rate(pair)
+                if wr is None: continue
+                clr = "#30d158" if wr >= 60 else ("#ffd60a" if wr >= 45 else "#ff453a")
+                with wr_cols[shown % 5]:
+                    st.markdown(
+                        f'<div class="mc" style="border-color:rgba(255,255,255,.07);">'
+                        f'<div class="mc-v" style="color:{clr}">{wr:.0f}%</div>'
+                        f'<div class="mc-l">{pair}</div>'
+                        f'<div style="font-size:.65rem;color:rgba(255,255,255,.25);margin-top:3px;">{wn} signals tracked</div>'
+                        f'</div>', unsafe_allow_html=True)
+                shown += 1
+                if shown >= 10: break
 
     scanner()
 
