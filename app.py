@@ -1944,14 +1944,159 @@ with T3:
                                              font=dict(color="#82b1ff",size=13)))
                 st.plotly_chart(fig, use_container_width=True, key="mt_chart",
                                 config={"displayModeBar":True,"scrollZoom":True})
-            st.markdown('<div class="ph ph-mt">📊 MetaTrader 4 / 5 — Step by step</div>', unsafe_allow_html=True)
+
+            # ── derive multi-TP levels ──────────────────────────────────────
+            _pip_s  = pip_size(guide_pair)
+            _dir    = 1 if act == "BUY" else -1
+            _dist   = abs(tp - entry)
+            _tp2    = round(entry + _dir * 2 * _dist, 5)
+            _tp3    = round(entry + _dir * 3 * _dist, 5)
+            _tp2_p  = max(1, round(abs(_tp2 - entry) / _pip_s)) if _pip_s > 0 else tp_p * 2
+            _tp3_p  = max(1, round(abs(_tp3 - entry) / _pip_s)) if _pip_s > 0 else tp_p * 3
+            _ot     = f"{'BUY' if act == 'BUY' else 'SELL'} LIMIT"
+            _ot_col = "#26a69a" if act == "BUY" else "#ef5350"
+            _sl_dir = "below" if act == "BUY" else "above"
+            _tp_dir = "above" if act == "BUY" else "below"
+
+            st.markdown('<div class="ph ph-mt">📊 MetaTrader 4 / 5 — Exact Trade Setup</div>', unsafe_allow_html=True)
+
+            # ── Signal breakdown card (mirrors Telegram signal format) ──────
+            st.markdown(f"""
+<div style="background:rgba(130,177,255,.07);border:1px solid rgba(130,177,255,.25);
+border-radius:14px;padding:18px 22px;margin:12px 0 16px;">
+  <div style="color:#82b1ff;font-weight:800;font-size:.95rem;margin-bottom:14px;
+  letter-spacing:.06em;">📡 SIGNAL BREAKDOWN — TYPE THIS INTO MT4/5</div>
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:7px 20px;align-items:center;">
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">PAIR</div>
+    <div style="color:#fff;font-weight:800;font-size:.95rem;">{guide_pair}</div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">ORDER TYPE</div>
+    <div style="color:{_ot_col};font-weight:800;font-size:.95rem;">{_ot}</div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">ENTRY PRICE</div>
+    <div style="color:#ffd60a;font-weight:800;font-size:.95rem;">{entry:.5f}</div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">STOP LOSS</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#ef5350;">{sl:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({sl_p} pips {_sl_dir})</span>
+    </div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">TAKE PROFIT 1</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#26a69a;">{tp:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({tp_p} pips {_tp_dir}) · 1st target</span>
+    </div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">TAKE PROFIT 2</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#26a69a;">{_tp2:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({_tp2_p} pips {_tp_dir}) · 2nd target</span>
+    </div>
+    <div style="color:rgba(255,255,255,.42);font-size:.78rem;letter-spacing:.04em;">TAKE PROFIT 3</div>
+    <div style="font-weight:700;font-size:.9rem;">
+      <span style="color:#26a69a;">{_tp3:.5f}</span>
+      <span style="color:rgba(255,255,255,.35);font-size:.76rem;margin-left:6px;">({_tp3_p} pips {_tp_dir}) · 3rd target</span>
+    </div>
+  </div>
+  <div style="margin-top:14px;padding-top:11px;border-top:1px solid rgba(255,255,255,.07);
+  font-size:.76rem;color:rgba(255,255,255,.3);">
+    ⚠️ Risk only what you can afford to lose — recommended 1–2% of account balance per trade.
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # ── MT4/5 New Order dialog field-by-field ──────────────────────
+            st.markdown(f"""
+<div style="background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.09);
+border-radius:14px;padding:18px 22px;margin:0 0 16px;">
+  <div style="color:#fff;font-weight:800;font-size:.9rem;margin-bottom:14px;
+  letter-spacing:.02em;">🖥️ MT4/5 NEW ORDER DIALOG — FIELD BY FIELD</div>
+  <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);width:38%;vertical-align:top;">Symbol</td>
+      <td style="padding:8px 0;color:#fff;font-weight:700;">{guide_pair.replace("/","")}&nbsp;
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;">(search or drag from Market Watch)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Order Type</td>
+      <td style="padding:8px 0;font-weight:700;">
+        <span style="color:{_ot_col};">{_ot}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(dropdown → Pending Order)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">At Price</td>
+      <td style="padding:8px 0;">
+        <span style="color:#ffd60a;font-weight:700;">{entry:.5f}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(your limit entry — order waits here)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Stop Loss</td>
+      <td style="padding:8px 0;">
+        <span style="color:#ef5350;font-weight:700;">{sl:.5f}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">({sl_p} pips {_sl_dir} — max loss level)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Take Profit</td>
+      <td style="padding:8px 0;">
+        <span style="color:#26a69a;font-weight:700;">{tp:.5f}</span>
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">({tp_p} pips · enter TP1 here first)</span></td>
+    </tr>
+    <tr style="border-bottom:1px solid rgba(255,255,255,.06);">
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Lot Size</td>
+      <td style="padding:8px 0;color:#fff;font-weight:700;">⅓ of your normal lot
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(e.g. 0.03 total → 0.01 per order)</span></td>
+    </tr>
+    <tr>
+      <td style="padding:8px 4px 8px 0;color:rgba(255,255,255,.4);vertical-align:top;">Comment</td>
+      <td style="padding:8px 0;color:rgba(255,255,255,.55);">"TP1 of 3"
+        <span style="color:rgba(255,255,255,.3);font-size:.75rem;margin-left:6px;">(optional label to track your orders)</span></td>
+    </tr>
+  </table>
+</div>""", unsafe_allow_html=True)
+
+            # ── 3-Target strategy card ─────────────────────────────────────
+            st.markdown(f"""
+<div style="background:rgba(38,166,154,.07);border:1px solid rgba(38,166,154,.28);
+border-radius:14px;padding:18px 22px;margin:0 0 18px;">
+  <div style="color:#26a69a;font-weight:800;font-size:.9rem;margin-bottom:10px;">
+    🎯 3-TARGET STRATEGY — PLACE 3 SEPARATE PENDING ORDERS
+  </div>
+  <div style="font-size:.78rem;color:rgba(255,255,255,.42);margin-bottom:14px;">
+    MT4/5 allows only one TP per order. Place 3 identical orders with the same Entry &amp; SL,
+    but a different TP and smaller lot size each time:
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:13px;text-align:center;">
+      <div style="color:#26a69a;font-weight:800;font-size:.9rem;">ORDER 1</div>
+      <div style="color:rgba(255,255,255,.38);font-size:.7rem;margin:4px 0 2px;">TP1 · {tp_p} pips</div>
+      <div style="color:#ffd60a;font-weight:700;font-size:.85rem;">{tp:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:5px;">⅓ of lot size</div>
+    </div>
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:13px;text-align:center;">
+      <div style="color:#26a69a;font-weight:800;font-size:.9rem;">ORDER 2</div>
+      <div style="color:rgba(255,255,255,.38);font-size:.7rem;margin:4px 0 2px;">TP2 · {_tp2_p} pips</div>
+      <div style="color:#ffd60a;font-weight:700;font-size:.85rem;">{_tp2:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:5px;">⅓ of lot size</div>
+    </div>
+    <div style="background:rgba(255,255,255,.05);border-radius:10px;padding:13px;text-align:center;">
+      <div style="color:#26a69a;font-weight:800;font-size:.9rem;">ORDER 3</div>
+      <div style="color:rgba(255,255,255,.38);font-size:.7rem;margin:4px 0 2px;">TP3 · {_tp3_p} pips</div>
+      <div style="color:#ffd60a;font-weight:700;font-size:.85rem;">{_tp3:.5f}</div>
+      <div style="color:rgba(255,255,255,.28);font-size:.7rem;margin-top:5px;">⅓ of lot size</div>
+    </div>
+  </div>
+  <div style="font-size:.74rem;color:rgba(255,255,255,.28);border-top:1px solid rgba(255,255,255,.06);padding-top:10px;">
+    💡 Same Entry (<b style="color:rgba(255,215,0,.6);">{entry:.5f}</b>) and Stop Loss (<b style="color:rgba(239,83,80,.6);">{sl:.5f}</b>) on all 3 orders.
+    When TP1 hits → move orders 2 &amp; 3 SL to <b style="color:rgba(255,215,0,.6);">{entry:.5f}</b> (break-even) to protect profit.
+  </div>
+</div>""", unsafe_allow_html=True)
+
             steps = [
-                f"Open MetaTrader and locate <b>{guide_pair}</b> in <i>Market Watch</i> (Ctrl+M if hidden).",
-                f"Right-click the chart → <b>Timeframe</b> → select <b>{tf_int.upper()}</b>.",
-                f"Press <b>F9</b> or click <b>New Order</b> in the toolbar.",
-                f"Direction: <b>{bsw}</b>. TP field: <span class='pt pt-tp'>{tp:.5f}</span>. SL field: <span class='pt pt-sl'>{sl:.5f}</span>.",
-                f"Click <b>{bsw} by Market</b> to place.",
-                f"Check <b>Terminal → Trade</b>: green line at <span class='pt pt-tp'>{tp:.5f}</span>, red at <span class='pt pt-sl'>{sl:.5f}</span>.",
+                f"Open MetaTrader → press <b>Ctrl+M</b> to show Market Watch → find <b>{guide_pair}</b> in the list.",
+                f"Double-click <b>{guide_pair}</b> to open a chart → right-click chart → <b>Timeframe → {tf_int.upper()}</b>.",
+                f"Press <b>F9</b> (or toolbar → <b>New Order</b>) to open the order dialog.",
+                f"<b>Order Type</b> dropdown → select <b style='color:{_ot_col};'>{_ot}</b> (this is a pending order — it waits for price to reach your entry).",
+                f"<b>At Price</b> field → type <b style='color:#ffd60a;'>{entry:.5f}</b> — this is your exact entry level.",
+                f"<b>Stop Loss</b> field → type <b style='color:#ef5350;'>{sl:.5f}</b> ({sl_p} pips {_sl_dir} — your worst-case exit).",
+                f"<b>Take Profit</b> field → type <b style='color:#26a69a;'>{tp:.5f}</b> (TP1). Set <b>Lot Size</b> to ⅓ of your normal size → click <b>Place</b>.",
+                f"Press <b>F9</b> again → same Entry + SL → change TP to <span class='pt pt-tp'>{_tp2:.5f}</span> (TP2) → click <b>Place</b>.",
+                f"Press <b>F9</b> one more time → same Entry + SL → change TP to <span class='pt pt-tp'>{_tp3:.5f}</span> (TP3) → click <b>Place</b>.",
+                f"Press <b>Ctrl+T</b> → <b>Trade</b> tab → verify all <b>3 pending orders</b> for {guide_pair} appear. When TP1 hits, move orders 2 &amp; 3 SL to break-even.",
             ]
             st.markdown(make_steps(steps,"snum-mt"), unsafe_allow_html=True)
 
